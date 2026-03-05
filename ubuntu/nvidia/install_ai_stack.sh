@@ -1,30 +1,57 @@
 #!/bin/bash
-# AI Stack Installation Script for AMD Strix Halo (gfx1151)
+# AI Stack Installation Script for Ubuntu 22.04 with NVIDIA GPU
 # Headless Claude Code box with remote access support
-# Run with: bash ~/install-ai-stack.sh
+# Assumes NVIDIA drivers are already installed
+# Run with: bash ~/install_ai_stack.sh
 
 set -e
 
 echo "=============================================="
-echo "AI Stack Installation for AMD Strix Halo"
-echo "Headless/Remote Configuration"
+echo "AI Stack Installation for NVIDIA GPU"
+echo "Ubuntu 22.04 LTS - Headless/Remote Configuration"
 echo "=============================================="
 echo ""
 
-# Add ROCm to PATH for this session
-export PATH="/opt/rocm/bin:$PATH"
+# Add CUDA to PATH for this session
+export PATH="/usr/local/cuda/bin:$PATH"
+export LD_LIBRARY_PATH="/usr/local/cuda/lib64:${LD_LIBRARY_PATH:-}"
 
-echo "=== Phase 1: Installing ROCm Stack ==="
-sudo pacman -S --needed rocm-hip-sdk rocm-opencl-sdk hip-runtime-amd \
-    hipblas hipblaslt miopen-hip rocblas rocfft rccl roctracer
+echo "=== Phase 1: Installing CUDA Toolkit 12.8 ==="
+echo "Note: NVIDIA drivers are assumed to be already installed."
+echo ""
+
+# Verify NVIDIA drivers are present
+if ! command -v nvidia-smi &>/dev/null; then
+    echo "ERROR: nvidia-smi not found. Please install NVIDIA drivers first."
+    exit 1
+fi
+echo "NVIDIA driver detected:"
+nvidia-smi --query-gpu=driver_version,name --format=csv,noheader
+echo ""
+
+# Add NVIDIA CUDA repository
+if ! dpkg -l cuda-keyring 2>/dev/null | grep -q "^ii"; then
+    wget -q https://developer.download.nvidia.com/compute/cuda/repos/ubuntu2204/x86_64/cuda-keyring_1.1-1_all.deb
+    sudo dpkg -i cuda-keyring_1.1-1_all.deb
+    rm cuda-keyring_1.1-1_all.deb
+    sudo apt-get update
+fi
+
+# Install CUDA toolkit (not drivers)
+sudo apt-get install -y cuda-toolkit-12-8
+
+# Install cuDNN and NCCL
+sudo apt-get install -y libcudnn9-cuda-12
+sudo apt-get install -y libnccl2 libnccl-dev
 
 echo ""
-echo "Verifying ROCm installation..."
-/opt/rocm/bin/rocminfo | grep -E "Name:|Marketing|gfx" | head -10 || echo "rocminfo check skipped"
+echo "Verifying CUDA installation..."
+nvcc --version || echo "nvcc check skipped"
+nvidia-smi | head -5 || echo "nvidia-smi check skipped"
 
 echo ""
-echo "=== Phase 2: Installing tmux for persistent sessions ==="
-sudo pacman -S --needed tmux
+echo "=== Phase 2: Installing build tools and remote session utilities ==="
+sudo apt-get install -y build-essential tmux mosh
 
 echo ""
 echo "=== Phase 3: Installing Miniforge/Mamba ==="
@@ -51,8 +78,8 @@ fi
 mamba activate ai
 
 echo ""
-echo "=== Phase 5: Installing PyTorch with ROCm ==="
-pip install torch torchvision torchaudio --index-url https://download.pytorch.org/whl/rocm6.2
+echo "=== Phase 5: Installing PyTorch with CUDA ==="
+pip install torch torchvision torchaudio --index-url https://download.pytorch.org/whl/cu128
 
 echo ""
 echo "=== Phase 6: Installing HuggingFace Ecosystem ==="
@@ -70,7 +97,7 @@ echo ""
 echo "=== Phase 8: Installing JupyterLab ==="
 pip install jupyterlab jupyterlab-lsp ipywidgets
 pip install ipykernel
-python -m ipykernel install --user --name ai --display-name "Python (AI/ROCm)"
+python -m ipykernel install --user --name ai --display-name "Python (AI/CUDA)"
 
 echo ""
 echo "=== Phase 9: Installing Additional Packages ==="
@@ -85,13 +112,13 @@ echo ""
 echo "NEXT STEPS:"
 echo ""
 echo "1. Run the post-install script to configure headless services:"
-echo "   bash ~/setup-headless.sh"
+echo "   bash ~/setup_headless.sh"
 echo ""
 echo "2. Set JupyterLab password:"
 echo "   source ~/.config/ai-env.sh && jupyter lab password"
 echo ""
 echo "3. Start a new shell or run:"
-echo "   source ~/.bash_profile"
+echo "   source ~/.bashrc"
 echo ""
 echo "The AI environment will auto-activate on SSH login."
 echo "JupyterLab will be available at http://<ip>:8888"
