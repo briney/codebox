@@ -44,12 +44,28 @@ Do all three of these steps before finishing:
 
 ### 1. Write a Session Log
 
-Create `~/codebox/notebook/projects/<project>/sessions/YYYY-MM-DD.md`.
+Generate a short (max 6-8 words) session description.
 
-If a file for today already exists, use a letter suffix: `YYYY-MM-DD-b.md`, `-c.md`, etc.
+Create `~/codebox/notebook/projects/<project>/sessions/YYYY-MM-DD_{session description, formatted as snakecase and all lowercase}.md`.
 
 ```markdown
-# Session — YYYY-MM-DD
+---
+title: "{session description}"
+date: YYYY-MM-DD
+time: "HH:MM"           # session start time (24h, local timezone)
+project: <project-name>
+tldr: >
+  One to two sentences summarizing the session's activities and outcomes.
+model: claude-sonnet-4-20250514  # or gpt-4.1, etc.
+harness: claude-code    # claude-code | codex | opencode | aider | custom
+duration: "Xh Ym"       # wall-clock session duration, if known
+tokens: ~               # total tokens used, if available (null otherwise)
+git_branch: ~           # branch worked on, if applicable
+status: completed       # completed | interrupted | blocked
+tags: []                # freeform tags for searchability, e.g. [refactor, auth, bugfix]
+---
+
+# YYYY-MM-DD -- {session description}
 
 ## Summary
 One to three sentences: what was accomplished this session.
@@ -103,7 +119,7 @@ without reading every session log.
 ```bash
 cd ~/codebox/notebook
 git add -A
-git commit -m "<project>: session log YYYY-MM-DD"
+git commit -m "<project>: session log YYYY-MM-DD {session description}"
 git push
 ```
 
@@ -139,6 +155,7 @@ Create these at the project root when they'd be useful, not preemptively:
 
 - **Dates**: Always `YYYY-MM-DD`.
 - **Project names**: Lowercase, hyphenated (`balm`, `paperlens`, `bio-kinema`).
+- **Frontmatter**: Every session log must have a YAML frontmatter block. Fill in all fields you have data for; use `~` (null) for anything unavailable. Never fabricate values for `duration` or `tokens` — leave them null if you don't have reliable numbers.
 - **Tone**: Write for a technically skilled reader with zero context on this specific session. Concise but not cryptic.
 - **Granularity**: Log meaningful work. If a session is trivial ("ran tests, they passed"), a one-line session log is fine.
 - **Honesty**: If you're uncertain about something, say so. Never fabricate details to fill the template.
