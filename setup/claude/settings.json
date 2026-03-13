@@ -37,6 +37,7 @@
       "Bash(black *)",
       "Bash(isort *)",
       "Bash(pre-commit *)",
+      "Bash(source *)",
 
       "Bash(node *)",
       "Bash(npm *)",
