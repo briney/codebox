@@ -55,32 +55,43 @@ cd ~/codebox
 git submodule update --init
 ```
 
-### Claude Code
+### Configure coding agents
 
-Copy the global instruction files to `~/.claude/`:
-
-```bash
-cp ~/codebox/setup/claude/CLAUDE.md ~/.claude/CLAUDE.md
-cp ~/codebox/setup/claude/WEB.md ~/.claude/WEB.md
-cp ~/codebox/setup/claude/COMPILED.md ~/.claude/COMPILED.md
-```
-
-`CLAUDE.md` is the primary directive file (loaded automatically). `WEB.md` and `COMPILED.md`
-are supplementary guidelines referenced by `CLAUDE.md` when working on web or compiled-language
-projects.
-
-### Codex
-
-Copy the Codex-specific instruction files to `~/.codex/`:
+A shared set of instruction files lives in `setup/instructions/` and is installed to the
+correct location for each agent harness. Run the install script to set up all harnesses at once:
 
 ```bash
-cp ~/codebox/setup/codex/AGENTS.md ~/.codex/AGENTS.md
-cp ~/codebox/setup/codex/WEB.md ~/.codex/WEB.md
-cp ~/codebox/setup/codex/COMPILED.md ~/.codex/COMPILED.md
+~/codebox/setup/install.sh
 ```
 
-`AGENTS.md` is the Codex equivalent of `CLAUDE.md`. The supplementary `WEB.md` and `COMPILED.md`
-files serve the same role as their Claude Code counterparts.
+Or install a specific harness:
+
+```bash
+~/codebox/setup/install.sh --claude     # Claude Code only
+~/codebox/setup/install.sh --codex      # Codex only
+~/codebox/setup/install.sh --opencode   # OpenCode only
+```
+
+The script is idempotent and can be re-run after pulling changes to update all config files.
+
+<details>
+<summary>What gets installed where</summary>
+
+Each harness receives the same instruction files (`INSTRUCTIONS.md`, `WEB.md`, `COMPILED.md`)
+copied to its config directory with the expected filename:
+
+| Harness | Config directory | Instruction file | Skills |
+|---------|-----------------|-------------------|--------|
+| Claude Code | `~/.claude/` | `CLAUDE.md` | Symlinked as slash commands in `~/.claude/commands/` |
+| Codex | `~/.codex/` | `AGENTS.md` | Referenced via `AGENTS.md` |
+| OpenCode | `~/.config/opencode/` | `AGENTS.md` | Symlinked as skill directories in `~/.config/opencode/skills/` |
+
+Claude Code also gets `settings.json` (permissions and plugin config) from `setup/claude/`.
+
+> **Note:** OpenCode has a Claude Code compatibility layer and will read `~/.claude/CLAUDE.md`
+> as a fallback. The dedicated `~/.config/opencode/AGENTS.md` takes precedence if present.
+
+</details>
 
 ## Skills
 
