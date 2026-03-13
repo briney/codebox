@@ -23,7 +23,7 @@ This environment uses a lab notebook at `~/codebox/notebook/`. If this directory
 git clone git@github.com:briney/codebox.git ~/codebox
 ```
 
-- **Start of session**: Read `~/codebox/notebook/projects/<project>/STATUS.md` before doing work. If unsure which project, check `~/codebox/notebook/PROJECTS.md`.
+- **Start of session**: Pull the latest notebook (`cd ~/codebox/notebook && git pull`), then read `~/codebox/notebook/projects/<project>/STATUS.md` before doing work. If unsure which project, check `~/codebox/notebook/PROJECTS.md`.
 - **End of session**: Write a session log, update STATUS.md, commit and push. Follow the lab-notebook skill at `~/codebox/skills/lab-notebook/SKILL.md` for templates and conventions.
 
 ---
