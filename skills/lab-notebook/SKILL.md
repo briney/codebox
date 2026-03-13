@@ -34,9 +34,13 @@ notebook/
 
 ## Starting a Session
 
-1. Read `~/codebox/notebook/projects/<project>/STATUS.md`.
-2. If you need more context, scan recent files in `sessions/`.
-3. If you don't know which project is relevant, read `~/codebox/notebook/PROJECTS.md`.
+1. Pull the latest notebook state:
+   ```bash
+   cd ~/codebox/notebook && git pull
+   ```
+2. Read `~/codebox/notebook/projects/<project>/STATUS.md`. If the project directory does not exist, create it and add a `STATUS.md` file.
+3. If you need more context, scan recent files in `sessions/`.
+4. If you don't know which project is relevant, read `~/codebox/notebook/PROJECTS.md`.
 
 ## Ending a Session
 
