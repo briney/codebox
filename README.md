@@ -8,46 +8,54 @@ Personal toolkit for AI-assisted development. Contains:
 
 ## Setup
 
-Clone this repo to `~/codebox` on each machine. Use `--recurse-submodules` to pull the
-lab notebook alongside the main repo:
+### Configure your notebook
+The `notebook/` directory is a [separate private repo](https://github.com/briney/codebox-notebook) included as a git submodule. If you just cloned this repo, the submodule will still point to the original notebook repo (which you won't have access to). To fix, you need to first fork the repo, and then clone your fork to `~/codebox`:
 
 ```bash
-git clone --recurse-submodules git@github.com:briney/codebox.git ~/codebox
+git clone --recurse-submodules https://github.com/<your-username>/codebox.git ~/codebox
 ```
 
-If you cloned without `--recurse-submodules`, initialize the notebook submodule after:
+Now you have two options depending on how you want to configure your notebook:
+
+*Local notebook (not version controlled):*  
+Remove the submodule and create a plain directory:
+```bash
+cd ~/codebox
+git submodule deinit -f notebook
+git rm -f notebook
+rm -rf .git/modules/notebook
+mkdir -p notebook/projects notebook/experiments
+echo "notebook/" >> .gitignore
+```
+
+*Your own notebook repo:*  
+Create a new repo on GitHub (e.g. `your-username/codebox-notebook`), then re-point the submodule:
+```bash
+cd ~/codebox
+git submodule deinit -f notebook
+git submodule set-url notebook git@github.com:<your-username>/codebox-notebook.git
+git submodule update --init
+```
+
+Once you configure your notebook and push the changes back to your fork, any future clones of your 
+repository will have your notebook initialized the way you configured it. So every future install can 
+skip the submodule configuration step and install directly as described below.
+
+### Installation
+
+Using this repository as an example (for your fork, replace `briney` with your GitHub username), just 
+clone to `~/codebox`:
+
+```bash
+git clone --recurse-submodules https://github.com/briney/codebox.git ~/codebox
+```
+
+If you cloned without `--recurse-submodules` but still want to initialize the notebook submodule, you can run:
 
 ```bash
 cd ~/codebox
 git submodule update --init
 ```
-
-> **Interested in forking this repo?**  
-> The `notebook/` directory is a
-> [separate private repo](https://github.com/briney/codebox-notebook) included as a git
-> submodule. If you fork codebox, the submodule will still point to the original notebook repo
-> (which you won't have access to). To fix this you have two options:
->
-> *Local notebook (not version controlled):* Remove the submodule and create a plain directory:
-> ```bash
-> cd ~/codebox
-> git submodule deinit -f notebook
-> git rm -f notebook
-> rm -rf .git/modules/notebook
-> mkdir -p notebook/projects notebook/experiments
-> echo "notebook/" >> .gitignore
-> ```
->
-> *Your own notebook repo:* Create a new repo on GitHub (e.g. `your-username/codebox-notebook`),
-> then re-point the submodule:
-> ```bash
-> cd ~/codebox
-> git submodule deinit -f notebook
-> git submodule set-url notebook git@github.com:<your-username>/codebox-notebook.git
-> git submodule update --init
-> ```
-> Note that once you commit one of these operations to your fork, any future clones of your 
-> fork will have your notebook initialized the way you configured it.
 
 ### Claude Code
 
