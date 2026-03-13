@@ -22,11 +22,11 @@ cd ~/codebox
 git submodule update --init
 ```
 
-> **Forking?**  
+> **Interested in forking this repo?**  
 > The `notebook/` directory is a
 > [separate private repo](https://github.com/briney/codebox-notebook) included as a git
 > submodule. If you fork codebox, the submodule will still point to the original notebook repo
-> (which you won't have access to). Two options:
+> (which you won't have access to). To fix this you have two options:
 >
 > *Local notebook (not version controlled):* Remove the submodule and create a plain directory:
 > ```bash
