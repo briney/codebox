@@ -17,8 +17,7 @@ git clone --recurse-submodules https://github.com/<your-username>/codebox.git ~/
 
 Now you have two options depending on how you want to configure your notebook:
 
-*Local notebook (not version controlled):*  
-Remove the submodule and create a plain directory:
+*Local notebook (not version controlled):* Remove the submodule and create a plain directory:
 ```bash
 cd ~/codebox
 git submodule deinit -f notebook
@@ -28,8 +27,7 @@ mkdir -p notebook/projects notebook/experiments
 echo "notebook/" >> .gitignore
 ```
 
-*Your own notebook repo:*  
-Create a new repo on GitHub (e.g. `your-username/codebox-notebook`), then re-point the submodule:
+*Your own notebook repo:* Create a new repo on GitHub (e.g. `your-username/codebox-notebook`), then re-point the submodule:
 ```bash
 cd ~/codebox
 git submodule deinit -f notebook
