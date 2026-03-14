@@ -35,7 +35,7 @@ notebook/
 
 1. Pull the latest notebook state:
    ```bash
-   cd ~/codebox/notebook && git pull
+   ~/codebox/scripts/notebook-pull.sh
    ```
 2. Read `~/codebox/notebook/projects/<project>/STATUS.md`. If the project directory does not exist, create it and add a `STATUS.md` file.
 3. If you need more context, scan recent files in `sessions/`.
