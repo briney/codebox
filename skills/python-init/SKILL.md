@@ -90,6 +90,12 @@ template in `templates/AGENTS.md.template`, which includes:
 - Testing expectations
 - What not to do
 
+#### Github workflows
+
+By default, we want two GitHub workflows at package initialization: `ci.yaml` and 
+`python-publish.yaml`. Use the templates in `templates/` as a starting point, and 
+modify as needed.
+
 ### 3. Initialize Git and Install
 
 ```bash
