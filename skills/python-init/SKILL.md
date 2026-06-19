@@ -68,7 +68,7 @@ Refer to `references/pyproject-guide.md` for the full annotated example. Key poi
 - Use `[build-system]` with `hatchling` (simple, standards-compliant, no setup.py needed)
 - Pin Python version with `requires-python`
 - Define `[project.optional-dependencies]` for dev/test/docs extras
-- Configure all tools (ruff, pytest, mypy) in pyproject.toml — no separate config files
+- Configure all tools (ruff, pytest, ty) in pyproject.toml — no separate config files
 
 #### CLAUDE.md
 

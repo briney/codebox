@@ -26,7 +26,7 @@ dependencies = [
 dev = [
     "pytest>=7.0",
     "ruff>=0.4",
-    "mypy>=1.0",
+    "ty>=0.0.40",
     "pre-commit>=3.0",
 ]
 
@@ -60,23 +60,30 @@ select = [
 ]
 
 [tool.ruff.lint.isort]
-profile = "black"
+# Ruff's isort is black-compatible by default — there is no `profile` key.
+# Set first-party packages so local imports group correctly.
+known-first-party = ["<package_name>"]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]
 addopts = "-ra -q"
 
-[tool.mypy]
-python_version = "3.11"
-strict = true
-warn_return_any = true
-warn_unused_configs = true
+[tool.ty.environment]
+# ty infers the Python version from `requires-python`; set explicitly for clarity.
+python-version = "3.11"
 
 [tool.hatch.build.targets.wheel]
 packages = ["src/<package_name>"]
 ```
 
 ## Notes
+
+- **Why ty (not mypy)?** `ty` is Astral's type checker (same family as ruff/uv),
+  configured under `[tool.ty]` in pyproject.toml and run with `ty check`. It is
+  pre-1.0 and evolving fast. It has no single `strict` toggle like mypy — it
+  infers types and reports via a default ruleset; tune severities under
+  `[tool.ty.rules]` if needed. It auto-detects the Python version from
+  `requires-python` and the active environment.
 
 - **Why hatchling?** It's the simplest PEP 517 build backend. No setup.py, no
   setup.cfg, no MANIFEST.in for most projects. Alternatives (setuptools, flit,
