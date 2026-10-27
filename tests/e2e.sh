@@ -11,7 +11,7 @@ P="e2e-$(date +%s)"
 NUMS=()
 
 cleanup() {
-  cd "$WORK"
+  cd "$WORK/repo"
   for n in "${NUMS[@]}"; do "$BOARD" drop "$n" >/dev/null 2>&1 || true; done
   rm -rf "$WORK"
 }
