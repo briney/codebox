@@ -2,11 +2,22 @@
 """board: the only thing that talks to GitHub Projects."""
 from __future__ import annotations
 
+import argparse
+import json
 import re
+import subprocess
 import sys
+from pathlib import Path
 from datetime import datetime, timedelta, timezone
 
 STATUSES = ["Triage", "Planned", "In Progress", "Done"]
+STATUS_COLORS = {"Triage": "GRAY", "Planned": "BLUE", "In Progress": "YELLOW", "Done": "GREEN"}
+STATUS_DESCRIPTIONS = {
+    "Triage": "Captured by `defer`, not yet looked at. The inbox.",
+    "Planned": "Bryan decided it's worth doing. Top-to-bottom order = priority.",
+    "In Progress": "Work has started (fully or partly).",
+    "Done": "Finished.",
+}
 MARK_START = "<!-- codebox:board:start -->"
 MARK_END = "<!-- codebox:board:end -->"
 
@@ -56,13 +67,19 @@ def claude_pointer(text):
 
 
 def render_list(items: list, repo: str, show_done: bool = False) -> str:
-    groups = ["Planned", "In Progress", "Triage", "(no status)"] + (["Done"] if show_done else [])
+    known = ["Planned", "In Progress", "Triage"]
+    custom = []
+    for it in items:
+        st = it["status"]
+        if st and st not in STATUSES and st not in custom and it["state"] != "CLOSED":
+            custom.append(st)
+    groups = known + custom + ["(no status)"] + (["Done"] if show_done else [])
     buckets = {g: [] for g in groups}
     for it in items:
-        if it["state"] == "CLOSED":
+        if it["state"] == "CLOSED" or it["status"] == "Done":
             g = "Done"
         else:
-            g = it["status"] if it["status"] in ("Planned", "In Progress", "Triage") else "(no status)"
+            g = it["status"] if it["status"] in known + custom else "(no status)"
         if g in buckets:
             ref = "#%d" % it["number"] if it["repo"] == repo else "%s#%d" % (it["repo"], it["number"])
             line = "  %s %s" % (ref, it["title"])
@@ -72,9 +89,159 @@ def render_list(items: list, repo: str, show_done: bool = False) -> str:
     return "\n\n".join("%s\n%s" % (g, "\n".join(buckets[g])) for g in groups if buckets[g])
 
 
-def main() -> int:
-    print("usage: board <command> (not yet implemented)")
+def plan_status_options(existing: list, has_items: bool):
+    missing = [s for s in STATUSES if s not in existing]
+    if not missing:
+        return None
+    if not has_items and list(existing) in ([], ["Todo", "In Progress", "Done"]):
+        return list(STATUSES)
+    raise ValueError("Status field is missing option(s): %s. Add them in the project UI "
+                     "(existing options are never rewritten)." % ", ".join(missing))
+
+
+def die(msg: str):
+    print(msg, file=sys.stderr)
+    sys.exit(1)
+
+
+def gh(*args: str, stdin=None) -> str:
+    try:
+        p = subprocess.run(["gh"] + list(args), input=stdin, capture_output=True, text=True)
+    except FileNotFoundError:
+        die("gh not found. Install the GitHub CLI: https://cli.github.com")
+    if p.returncode != 0:
+        err = p.stderr.strip()
+        if "INSUFFICIENT_SCOPES" in err or "project scope" in err:
+            die("Missing project scope. Run: gh auth refresh -h github.com -s project")
+        die(err.splitlines()[-1] if err else "gh %s failed" % " ".join(args[:2]))
+    return p.stdout
+
+
+def graphql(query: str, **variables) -> dict:
+    out = gh("api", "graphql", "--input", "-", stdin=json.dumps({"query": query, "variables": variables}))
+    res = json.loads(out)
+    if res.get("errors"):
+        msg = "; ".join(e.get("message", "?") for e in res["errors"])
+        if "INSUFFICIENT_SCOPES" in json.dumps(res["errors"]):
+            msg = "Missing project scope. Run: gh auth refresh -h github.com -s project"
+        die(msg)
+    return res["data"]
+
+
+def git_toplevel() -> Path:
+    p = subprocess.run(["git", "rev-parse", "--show-toplevel"], capture_output=True, text=True)
+    if p.returncode != 0:
+        die("Not in a git repository.")
+    return Path(p.stdout.strip())
+
+
+def current_repo() -> dict:
+    git_toplevel()
+    r = json.loads(gh("repo", "view", "--json", "owner,name"))
+    owner, name = r["owner"]["login"], r["name"]
+    d = graphql("""query($o:String!,$n:String!){repository(owner:$o,name:$n){id
+        owner{id __typename ... on User{databaseId} ... on Organization{databaseId}}}}""",
+                o=owner, n=name)["repository"]
+    return {"owner": owner, "name": name, "id": d["id"], "owner_id": d["owner"]["id"],
+            "owner_type": d["owner"]["__typename"], "owner_db_id": d["owner"]["databaseId"]}
+
+
+PROJECT_FIELDS = """id number title url
+  field(name:"Status"){... on ProjectV2SingleSelectField{id databaseId options{id name}}}"""
+
+
+def _board(node: dict) -> dict:
+    f = node.get("field") or {}
+    return {"id": node["id"], "number": node["number"], "title": node["title"], "url": node["url"],
+            "status_field_id": f.get("id"), "status_field_db_id": f.get("databaseId"),
+            "options": {o["name"]: o["id"] for o in f.get("options", [])}}
+
+
+def find_board(repo: dict) -> dict:
+    full = "%s/%s" % (repo["owner"], repo["name"])
+    nodes = graphql("query($o:String!,$n:String!){repository(owner:$o,name:$n){projectsV2(first:20){nodes{%s}}}}"
+                    % PROJECT_FIELDS, o=repo["owner"], n=repo["name"])["repository"]["projectsV2"]["nodes"]
+    if not nodes:
+        die("No board linked to %s. Run board-setup." % full)
+    if len(nodes) > 1:
+        nodes = [n for n in nodes if n["title"] == repo["name"]] or die(
+            "Multiple boards linked to %s: %s" % (full, ", ".join("#%d %s" % (n["number"], n["title"]) for n in nodes)))
+        nodes = nodes[:1]
+    return _board(nodes[0])
+
+
+def cmd_find(args) -> int:
+    b = find_board(current_repo())
+    print("#%d %s %s" % (b["number"], b["title"], b["url"]))
     return 0
+
+
+def _write_if_changed(path: Path, new: str, label: str):
+    old = path.read_text() if path.exists() else None
+    if old == new:
+        print("%s already up to date" % label)
+    else:
+        path.write_text(new)
+        print("%s %s" % (label, "created" if old is None else "updated"))
+
+
+def cmd_setup(args) -> int:
+    repo = current_repo()
+    full = "%s/%s" % (repo["owner"], repo["name"])
+    nodes = graphql("query($o:String!,$n:String!){repository(owner:$o,name:$n){projectsV2(first:20){totalCount}}}",
+                    o=repo["owner"], n=repo["name"])["repository"]["projectsV2"]["totalCount"]
+    if nodes == 0:
+        graphql("""mutation($o:ID!,$r:ID!,$t:String!){createProjectV2(input:{ownerId:$o,repositoryId:$r,title:$t}){
+            projectV2{id}}}""", o=repo["owner_id"], r=repo["id"], t=repo["name"])
+        print("created board %s" % repo["name"])
+    b = find_board(repo)
+    if nodes:
+        print("board #%d %s already exists" % (b["number"], b["title"]))
+    if not b["status_field_id"]:
+        die("Board #%d has no Status field." % b["number"])
+    count = graphql("query($p:ID!){node(id:$p){... on ProjectV2{items{totalCount}}}}", p=b["id"])["node"]["items"]["totalCount"]
+    try:
+        plan = plan_status_options(list(b["options"]), count > 0)
+    except ValueError as e:
+        die(str(e))
+    if plan is None:
+        print("Status options already in place")
+    else:
+        opts = [{"name": n, "color": STATUS_COLORS[n], "description": STATUS_DESCRIPTIONS[n]} for n in plan]
+        graphql("""mutation($f:ID!,$o:[ProjectV2SingleSelectFieldOptionInput!]!){
+            updateProjectV2Field(input:{fieldId:$f,singleSelectOptions:$o}){clientMutationId}}""",
+                f=b["status_field_id"], o=opts)
+        print("set Status options: %s" % ", ".join(plan))
+    views = graphql("query($p:ID!){node(id:$p){... on ProjectV2{views(first:20){nodes{layout}}}}}",
+                    p=b["id"])["node"]["views"]["nodes"]
+    if any(v["layout"] == "BOARD_LAYOUT" for v in views):
+        print("Board view already in place")
+    else:
+        base = "/orgs/%s" % repo["owner"] if repo["owner_type"] == "Organization" else "/user/%d" % repo["owner_db_id"]
+        gh("api", "-X", "POST", "%s/projectsV2/%d/views" % (base, b["number"]), "--input", "-",
+           stdin=json.dumps({"name": "Board", "layout": "board", "vertical_group_by": [b["status_field_db_id"]]}))
+        print("created Board view")
+    top = git_toplevel()
+    section = (Path(__file__).resolve().parent.parent / "board" / "agents-section.md").read_text().rstrip("\n")
+    agents = top / "AGENTS.md"
+    _write_if_changed(agents, splice_section(agents.read_text() if agents.exists() else "", section), "AGENTS.md")
+    claude = top / "CLAUDE.md"
+    new = claude_pointer(claude.read_text() if claude.exists() else None)
+    if new is None:
+        print("CLAUDE.md already points at AGENTS.md")
+    else:
+        claude.write_text(new)
+        print("CLAUDE.md updated")
+    return 0
+
+
+def main(argv=None) -> int:
+    ap = argparse.ArgumentParser(prog="board")
+    sub = ap.add_subparsers(dest="cmd", required=True)
+    sub.add_parser("find", help="print the linked board").set_defaults(fn=cmd_find)
+    sub.add_parser("setup", help="create/verify board, statuses, view, AGENTS.md").set_defaults(fn=cmd_setup)
+    args = ap.parse_args(argv)
+    return args.fn(args)
 
 
 if __name__ == "__main__":

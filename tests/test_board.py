@@ -1,9 +1,13 @@
 import unittest
 from datetime import datetime, timezone
+import importlib.util
 from importlib.machinery import SourceFileLoader
 from pathlib import Path
 
-board = SourceFileLoader("board", str(Path(__file__).resolve().parent.parent / "bin" / "board")).load_module()
+_loader = SourceFileLoader("board", str(Path(__file__).resolve().parent.parent / "bin" / "board"))
+_spec = importlib.util.spec_from_loader("board", _loader)
+board = importlib.util.module_from_spec(_spec)
+_loader.exec_module(board)
 UTC = timezone.utc
 S, E = board.MARK_START, board.MARK_END
 
@@ -79,6 +83,24 @@ class TestBoard(unittest.TestCase):
     def test_render_list_foreign_repo(self):
         out = board.render_list([item(5, "X", "Planned", repo="brineylab/other")], "o/r")
         self.assertIn("  brineylab/other#5 X", out)
+
+    def test_render_list_done_and_custom_status(self):
+        items = [item(1, "A", "Done"), item(2, "B", "Icebox"), item(3, "C", "Triage"),
+                 item(4, "D", "Review"), item(5, "E", "Icebox", state="CLOSED"), item(6, "F", None)]
+        out = board.render_list(items, "o/r")
+        self.assertEqual(out, "Triage\n  #3 C\n\nIcebox\n  #2 B\n\nReview\n  #4 D\n\n(no status)\n  #6 F")
+        out = board.render_list(items, "o/r", show_done=True)
+        self.assertTrue(out.endswith("Done\n  #1 A\n  #5 E"))
+
+    def test_plan_status_options(self):
+        S4 = board.STATUSES
+        self.assertEqual(board.plan_status_options(["Todo", "In Progress", "Done"], False), S4)
+        self.assertEqual(board.plan_status_options([], False), S4)
+        with self.assertRaisesRegex(ValueError, "Triage"):
+            board.plan_status_options(["Todo", "In Progress", "Done"], True)
+        self.assertIsNone(board.plan_status_options(S4 + ["Icebox"], True))
+        with self.assertRaisesRegex(ValueError, "Triage"):
+            board.plan_status_options(["Backlog", "Done"], False)
 
 
 if __name__ == "__main__":
