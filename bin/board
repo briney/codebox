@@ -1,0 +1,81 @@
+#!/usr/bin/env python3
+"""board: the only thing that talks to GitHub Projects."""
+from __future__ import annotations
+
+import re
+import sys
+from datetime import datetime, timedelta, timezone
+
+STATUSES = ["Triage", "Planned", "In Progress", "Done"]
+MARK_START = "<!-- codebox:board:start -->"
+MARK_END = "<!-- codebox:board:end -->"
+
+
+def parse_since(s: str, now: datetime) -> datetime:
+    m = re.fullmatch(r"(\d+)([dwh])", s)
+    if m:
+        unit = {"d": "days", "w": "weeks", "h": "hours"}[m.group(2)]
+        return now - timedelta(**{unit: int(m.group(1))})
+    try:
+        return datetime.strptime(s, "%Y-%m-%d").replace(tzinfo=timezone.utc)
+    except ValueError:
+        raise ValueError("bad --since %r (use 14d, 2w, 36h or YYYY-MM-DD)" % s)
+
+
+def status_option(name: str) -> str:
+    key = re.sub(r"[-_\s]+", " ", name).strip().lower()
+    for s in STATUSES:
+        if s.lower() == key:
+            return s
+    raise ValueError("unknown status %r (valid: %s)" % (name, ", ".join(STATUSES)))
+
+
+def parse_issue_ref(s: str) -> int:
+    m = re.fullmatch(r"#?(\d+)|https://github\.com/[^/]+/[^/]+/issues/(\d+)/?", s.strip())
+    if not m:
+        raise ValueError("bad issue reference %r" % s)
+    return int(m.group(1) or m.group(2))
+
+
+def splice_section(text: str, section: str) -> str:
+    block = "%s\n%s\n%s\n" % (MARK_START, section, MARK_END)
+    pat = re.compile(re.escape(MARK_START) + r".*?" + re.escape(MARK_END) + r"\n?", re.S)
+    if pat.search(text):
+        return pat.sub(lambda _: block, text, count=1)
+    if not text:
+        return block
+    return text + ("" if text.endswith("\n") else "\n") + "\n" + block
+
+
+def claude_pointer(text):
+    if text is None:
+        return "@AGENTS.md\n"
+    if "AGENTS.md" in text:
+        return None
+    return text + ("" if text.endswith("\n") else "\n") + "@AGENTS.md\n"
+
+
+def render_list(items: list, repo: str, show_done: bool = False) -> str:
+    groups = ["Planned", "In Progress", "Triage", "(no status)"] + (["Done"] if show_done else [])
+    buckets = {g: [] for g in groups}
+    for it in items:
+        if it["state"] == "CLOSED":
+            g = "Done"
+        else:
+            g = it["status"] if it["status"] in ("Planned", "In Progress", "Triage") else "(no status)"
+        if g in buckets:
+            ref = "#%d" % it["number"] if it["repo"] == repo else "%s#%d" % (it["repo"], it["number"])
+            line = "  %s %s" % (ref, it["title"])
+            if it["blocked_by"]:
+                line += " [blocked by %s]" % ", ".join(it["blocked_by"])
+            buckets[g].append(line)
+    return "\n\n".join("%s\n%s" % (g, "\n".join(buckets[g])) for g in groups if buckets[g])
+
+
+def main() -> int:
+    print("usage: board <command> (not yet implemented)")
+    return 0
+
+
+if __name__ == "__main__":
+    sys.exit(main())
