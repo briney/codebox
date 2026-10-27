@@ -35,14 +35,14 @@ cd "$WORK/repo"
 add() { # add <suffix> -> issue number
   local out; out="$("$BOARD" add --title "$P $1" --body - <<<"e2e card")"
   local n; n="$(sed -E 's/^#([0-9]+).*/\1/' <<<"$out")"
-  NUMS+=("$n"); echo "$n"
+  echo "$n"
 }
 list() { "$BOARD" list; }
 line_has() { list | grep -F "$1" | grep -qF "$2"; }
 line_lacks() { ! list | grep -F "$1" | grep -qF "$2"; }
 above() { list | grep -nF "$1" | head -1 | cut -d: -f1 | { read -r a; list | grep -nF "$2" | head -1 | cut -d: -f1 | { read -r b; [ -n "$a" ] && [ -n "$b" ] && [ "$a" -lt "$b" ]; }; }; }
 
-A="$(add A)"; B="$(add B)"; C="$(add C)"
+A="$(add A)"; B="$(add B)"; C="$(add C)"; NUMS=("$A" "$B" "$C")
 retry "cards appear on list" bash -c "$(declare -f list); BOARD='$BOARD'; list | grep -qF '$P C'"
 echo "--- list after add"; list
 
