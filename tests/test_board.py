@@ -17,6 +17,18 @@ def item(n, title, status, repo="o/r", state="OPEN", blocked_by=()):
             "repo": repo, "blocked_by": list(blocked_by)}
 
 
+class TestCardHelpers(unittest.TestCase):
+    def test_after_id(self):
+        ids = ["a", "b", "c"]
+        self.assertIsNone(board.after_id(ids, "a", True))
+        self.assertEqual(board.after_id(ids, "c", True), "b")
+        self.assertEqual(board.after_id(ids, "b", False), "b")
+
+    def test_blocker_ref(self):
+        self.assertEqual(board.blocker_ref("o/r", 3, "o/r"), "#3")
+        self.assertEqual(board.blocker_ref("o/x", 3, "o/r"), "o/x#3")
+
+
 class TestBoard(unittest.TestCase):
     def test_parse_since(self):
         now = datetime(2026, 10, 27, tzinfo=UTC)

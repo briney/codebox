@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import argparse
 import json
+import os
 import re
 import subprocess
 import sys
@@ -240,11 +241,252 @@ def cmd_setup(args) -> int:
     return 0
 
 
+def after_id(ids: list, ref_id: str, before: bool):
+    """afterId for updateProjectV2ItemPosition; None means move to the top."""
+    i = ids.index(ref_id)
+    if not before:
+        return ref_id
+    return ids[i - 1] if i > 0 else None
+
+
+def blocker_ref(blocker_repo: str, number: int, repo: str) -> str:
+    return "#%d" % number if blocker_repo == repo else "%s#%d" % (blocker_repo, number)
+
+
+ITEMS_Q = """query($p:ID!,$n:Int!,$c:String){node(id:$p){... on ProjectV2{items(first:$n,after:$c){
+  pageInfo{hasNextPage endCursor}
+  nodes{id fieldValueByName(name:"Status"){... on ProjectV2ItemFieldSingleSelectValue{name}}
+    content{__typename ... on Issue{id number title state repository{nameWithOwner}
+      blockedBy(first:10){nodes{number state repository{nameWithOwner}}}}}}}}}}"""
+
+
+def board_items(board: dict, page_size: int = 100, repo: str = "") -> list:
+    page_size = int(os.environ.get("BOARD_PAGE_SIZE") or page_size)
+    out, cursor = [], None
+    while True:
+        items = graphql(ITEMS_Q, p=board["id"], n=page_size, c=cursor)["node"]["items"]
+        for n in items["nodes"]:
+            c = n["content"] or {}
+            if c.get("__typename") != "Issue":
+                continue
+            out.append({
+                "item_id": n["id"], "issue_id": c["id"], "number": c["number"], "title": c["title"],
+                "state": c["state"], "repo": c["repository"]["nameWithOwner"],
+                "status": (n["fieldValueByName"] or {}).get("name"),
+                "blocked_by": [blocker_ref(b["repository"]["nameWithOwner"], b["number"], repo)
+                               for b in c["blockedBy"]["nodes"] if b["state"] == "OPEN"]})
+        if not items["pageInfo"]["hasNextPage"]:
+            return out
+        cursor = items["pageInfo"]["endCursor"]
+
+
+def ensure_item(board: dict, issue_id: str) -> str:
+    return graphql("""mutation($p:ID!,$c:ID!){addProjectV2ItemById(input:{projectId:$p,contentId:$c}){item{id}}}""",
+                   p=board["id"], c=issue_id)["addProjectV2ItemById"]["item"]["id"]
+
+
+def set_status(board: dict, item_id: str, status: str):
+    graphql("""mutation($p:ID!,$i:ID!,$f:ID!,$o:String!){updateProjectV2ItemFieldValue(input:{projectId:$p,
+        itemId:$i,fieldId:$f,value:{singleSelectOptionId:$o}}){clientMutationId}}""",
+            p=board["id"], i=item_id, f=board["status_field_id"], o=board["options"][status])
+
+
+def get_issue(repo: dict, number: int) -> dict:
+    r = graphql("""query($o:String!,$n:String!,$i:Int!){repository(owner:$o,name:$n){issue(number:$i){
+        id number title url state projectItems(first:50){nodes{id project{id}}}}}}""",
+                o=repo["owner"], n=repo["name"], i=number)["repository"]["issue"]
+    if not r:
+        die("No issue #%d in %s/%s." % (number, repo["owner"], repo["name"]))
+    return r
+
+
+def issue_item(board: dict, issue: dict):
+    for n in issue["projectItems"]["nodes"]:
+        if n["project"]["id"] == board["id"]:
+            return n["id"]
+    return None
+
+
+def read_text(flag):
+    if flag is not None:
+        return flag
+    return "" if sys.stdin.isatty() else sys.stdin.read().strip()
+
+
+def issue_num(s: str) -> int:
+    try:
+        return parse_issue_ref(s)
+    except ValueError as e:
+        die(str(e))
+
+
+def ctx(number: str):
+    repo = current_repo()
+    board = find_board(repo)
+    return repo, board, get_issue(repo, issue_num(number))
+
+
+def add_comment(issue_id: str, body: str):
+    graphql("mutation($i:ID!,$b:String!){addComment(input:{subjectId:$i,body:$b}){clientMutationId}}",
+            i=issue_id, b=body)
+
+
+def close_issue(issue_id: str, reason: str):
+    graphql("mutation($i:ID!,$r:IssueClosedStateReason!){closeIssue(input:{issueId:$i,stateReason:$r}){clientMutationId}}",
+            i=issue_id, r=reason)
+
+
+def cmd_add(args) -> int:
+    repo = current_repo()
+    board = find_board(repo)
+    if args.number:
+        issue = get_issue(repo, issue_num(args.number))
+        if issue_item(board, issue):
+            print("#%d already on the board" % issue["number"])
+            return 0
+    else:
+        if not args.title:
+            die("add needs --title or an issue number.")
+        issue = graphql("""mutation($r:ID!,$t:String!,$b:String!){createIssue(input:{repositoryId:$r,title:$t,body:$b}){
+            issue{id number title url}}}""", r=repo["id"], t=args.title, b=read_text(args.body))["createIssue"]["issue"]
+    set_status(board, ensure_item(board, issue["id"]), "Triage")
+    print("#%d %s %s" % (issue["number"], issue["title"], issue["url"]))
+    return 0
+
+
+def cmd_move(args) -> int:
+    try:
+        status = status_option(args.status)
+    except ValueError as e:
+        die(str(e))
+    repo, board, issue = ctx(args.number)
+    if status not in board["options"]:
+        die("Board has no %r option. Run board-setup." % status)
+    comment = read_text(args.comment)
+    if comment:
+        add_comment(issue["id"], comment)
+    item = issue_item(board, issue) or ensure_item(board, issue["id"])
+    if status == "Done":
+        if issue["state"] != "CLOSED":
+            close_issue(issue["id"], "COMPLETED")
+    elif issue["state"] == "CLOSED":
+        graphql("mutation($i:ID!){reopenIssue(input:{issueId:$i}){clientMutationId}}", i=issue["id"])
+    set_status(board, item, status)
+    print("#%d \u2192 %s" % (issue["number"], status))
+    return 0
+
+
+def cmd_order(args) -> int:
+    if bool(args.before) == bool(args.after):
+        die("order needs exactly one of --before / --after.")
+    repo, board, issue = ctx(args.number)
+    ref = issue_num(args.before or args.after)
+    items = board_items(board, repo="%s/%s" % (repo["owner"], repo["name"]))
+    full = "%s/%s" % (repo["owner"], repo["name"])
+    m = [i for i in items if i["number"] == ref and i["repo"] == full]
+    if not m:
+        die("#%d is not on the board." % ref)
+    item = issue_item(board, issue) or ensure_item(board, issue["id"])
+    ids = [i["item_id"] for i in items if i["item_id"] != item]
+    if item == m[0]["item_id"]:
+        die("Can't order #%d relative to itself." % ref)
+    after = after_id(ids, m[0]["item_id"], bool(args.before))
+    graphql("""mutation($p:ID!,$i:ID!,$a:ID){updateProjectV2ItemPosition(input:{projectId:$p,itemId:$i,afterId:$a}){
+        clientMutationId}}""", p=board["id"], i=item, a=after)
+    print("#%d %s #%d" % (issue["number"], "before" if args.before else "after", ref))
+    return 0
+
+
+def cmd_block(args) -> int:
+    repo, board, issue = ctx(args.number)
+    blocker = get_issue(repo, issue_num(args.by))
+    if not issue_item(board, issue):
+        ensure_item(board, issue["id"])
+    graphql("""mutation($i:ID!,$b:ID!){addBlockedBy(input:{issueId:$i,blockingIssueId:$b}){clientMutationId}}""",
+            i=issue["id"], b=blocker["id"])
+    print("#%d blocked by #%d" % (issue["number"], blocker["number"]))
+    return 0
+
+
+def cmd_drop(args) -> int:
+    repo, board, issue = ctx(args.number)
+    comment = read_text(args.comment)
+    if comment:
+        add_comment(issue["id"], comment)
+    close_issue(issue["id"], "NOT_PLANNED")
+    print("#%d dropped" % issue["number"])
+    return 0
+
+
+def cmd_comment(args) -> int:
+    repo = current_repo()
+    issue = get_issue(repo, issue_num(args.number))
+    body = read_text(args.body)
+    if not body:
+        die("comment needs text (--body or stdin).")
+    add_comment(issue["id"], body)
+    print("commented on #%d" % issue["number"])
+    return 0
+
+
+def cmd_search(args) -> int:
+    repo = current_repo()
+    q = "repo:%s/%s is:issue %s" % (repo["owner"], repo["name"], " ".join(args.terms))
+    nodes = graphql("""query($q:String!){search(type:ISSUE,query:$q,first:50){nodes{... on Issue{number title state
+        stateReason}}}}""", q=q)["search"]["nodes"]
+    for n in nodes:
+        st = "open" if n["state"] == "OPEN" else "not planned" if n["stateReason"] == "NOT_PLANNED" else "closed"
+        print("#%d [%s] %s" % (n["number"], st, n["title"]))
+    return 0
+
+
+def cmd_list(args) -> int:
+    repo = current_repo()
+    full = "%s/%s" % (repo["owner"], repo["name"])
+    out = render_list(board_items(find_board(repo), repo=full), full, show_done=args.all)
+    if out:
+        print(out)
+    return 0
+
+
 def main(argv=None) -> int:
     ap = argparse.ArgumentParser(prog="board")
     sub = ap.add_subparsers(dest="cmd", required=True)
     sub.add_parser("find", help="print the linked board").set_defaults(fn=cmd_find)
     sub.add_parser("setup", help="create/verify board, statuses, view, AGENTS.md").set_defaults(fn=cmd_setup)
+    p = sub.add_parser("add", help="create a card, or put an existing issue on the board")
+    p.add_argument("number", nargs="?")
+    p.add_argument("--title")
+    p.add_argument("--body")
+    p.set_defaults(fn=cmd_add)
+    p = sub.add_parser("move", help="set a card's status")
+    p.add_argument("number")
+    p.add_argument("status")
+    p.add_argument("--comment")
+    p.set_defaults(fn=cmd_move)
+    p = sub.add_parser("order", help="reposition a card")
+    p.add_argument("number")
+    p.add_argument("--before")
+    p.add_argument("--after")
+    p.set_defaults(fn=cmd_order)
+    p = sub.add_parser("block", help="mark N as blocked by M")
+    p.add_argument("number")
+    p.add_argument("--by", required=True)
+    p.set_defaults(fn=cmd_block)
+    p = sub.add_parser("drop", help="close as not planned")
+    p.add_argument("number")
+    p.add_argument("--comment")
+    p.set_defaults(fn=cmd_drop)
+    p = sub.add_parser("comment", help="comment on an issue")
+    p.add_argument("number")
+    p.add_argument("--body")
+    p.set_defaults(fn=cmd_comment)
+    p = sub.add_parser("search", help="search issues in this repo")
+    p.add_argument("terms", nargs="+")
+    p.set_defaults(fn=cmd_search)
+    p = sub.add_parser("list", help="show the board")
+    p.add_argument("--all", action="store_true", help="include Done")
+    p.set_defaults(fn=cmd_list)
     args = ap.parse_args(argv)
     return args.fn(args)
 
