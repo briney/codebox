@@ -24,6 +24,11 @@ class TestCardHelpers(unittest.TestCase):
         self.assertEqual(board.after_id(ids, "c", True), "b")
         self.assertEqual(board.after_id(ids, "b", False), "b")
 
+    def test_issue_url_repo(self):
+        self.assertEqual(board.issue_url_repo("https://github.com/other/x/issues/5"), "other/x")
+        self.assertIsNone(board.issue_url_repo("#5"))
+        self.assertIsNone(board.issue_url_repo("5"))
+
     def test_blocker_ref(self):
         self.assertEqual(board.blocker_ref("o/r", 3, "o/r"), "#3")
         self.assertEqual(board.blocker_ref("o/x", 3, "o/r"), "o/x#3")

@@ -49,6 +49,12 @@ def parse_issue_ref(s: str) -> int:
     return int(m.group(1) or m.group(2))
 
 
+def issue_url_repo(s: str):
+    """owner/name from an issue URL, or None for a bare number."""
+    m = re.fullmatch(r"https://github\.com/([^/]+/[^/]+)/issues/\d+/?", s.strip())
+    return m.group(1) if m else None
+
+
 def splice_section(text: str, section: str) -> str:
     block = "%s\n%s\n%s\n" % (MARK_START, section, MARK_END)
     pat = re.compile(re.escape(MARK_START) + r".*?" + re.escape(MARK_END) + r"\n?", re.S)
@@ -260,7 +266,7 @@ ITEMS_Q = """query($p:ID!,$n:Int!,$c:String){node(id:$p){... on ProjectV2{items(
       blockedBy(first:10){nodes{number state repository{nameWithOwner}}}}}}}}}}"""
 
 
-def board_items(board: dict, page_size: int = 100, repo: str = "") -> list:
+def board_items(board: dict, repo: str, page_size: int = 100) -> list:
     page_size = int(os.environ.get("BOARD_PAGE_SIZE") or page_size)
     out, cursor = [], None
     while True:
@@ -286,6 +292,8 @@ def ensure_item(board: dict, issue_id: str) -> str:
 
 
 def set_status(board: dict, item_id: str, status: str):
+    if status not in board["options"]:
+        die("Board has no %r option. Add it in the project UI." % status)
     graphql("""mutation($p:ID!,$i:ID!,$f:ID!,$o:String!){updateProjectV2ItemFieldValue(input:{projectId:$p,
         itemId:$i,fieldId:$f,value:{singleSelectOptionId:$o}}){clientMutationId}}""",
             p=board["id"], i=item_id, f=board["status_field_id"], o=board["options"][status])
@@ -308,12 +316,17 @@ def issue_item(board: dict, issue: dict):
 
 
 def read_text(flag):
-    if flag is not None:
-        return flag
-    return "" if sys.stdin.isatty() else sys.stdin.read().strip()
+    """Text from the flag; `-` reads stdin. Never reads stdin implicitly."""
+    if flag == "-":
+        return sys.stdin.read().strip()
+    return flag or ""
 
 
-def issue_num(s: str) -> int:
+def issue_num(s: str, repo: dict) -> int:
+    full = "%s/%s" % (repo["owner"], repo["name"])
+    url_repo = issue_url_repo(s)
+    if url_repo and url_repo.lower() != full.lower():
+        die("%s is not in %s." % (s, full))
     try:
         return parse_issue_ref(s)
     except ValueError as e:
@@ -323,7 +336,7 @@ def issue_num(s: str) -> int:
 def ctx(number: str):
     repo = current_repo()
     board = find_board(repo)
-    return repo, board, get_issue(repo, issue_num(number))
+    return repo, board, get_issue(repo, issue_num(number, repo))
 
 
 def add_comment(issue_id: str, body: str):
@@ -340,7 +353,7 @@ def cmd_add(args) -> int:
     repo = current_repo()
     board = find_board(repo)
     if args.number:
-        issue = get_issue(repo, issue_num(args.number))
+        issue = get_issue(repo, issue_num(args.number, repo))
         if issue_item(board, issue):
             print("#%d already on the board" % issue["number"])
             return 0
@@ -360,8 +373,6 @@ def cmd_move(args) -> int:
     except ValueError as e:
         die(str(e))
     repo, board, issue = ctx(args.number)
-    if status not in board["options"]:
-        die("Board has no %r option. Run board-setup." % status)
     comment = read_text(args.comment)
     if comment:
         add_comment(issue["id"], comment)
@@ -380,7 +391,7 @@ def cmd_order(args) -> int:
     if bool(args.before) == bool(args.after):
         die("order needs exactly one of --before / --after.")
     repo, board, issue = ctx(args.number)
-    ref = issue_num(args.before or args.after)
+    ref = issue_num(args.before or args.after, repo)
     items = board_items(board, repo="%s/%s" % (repo["owner"], repo["name"]))
     full = "%s/%s" % (repo["owner"], repo["name"])
     m = [i for i in items if i["number"] == ref and i["repo"] == full]
@@ -399,7 +410,7 @@ def cmd_order(args) -> int:
 
 def cmd_block(args) -> int:
     repo, board, issue = ctx(args.number)
-    blocker = get_issue(repo, issue_num(args.by))
+    blocker = get_issue(repo, issue_num(args.by, repo))
     if not issue_item(board, issue):
         ensure_item(board, issue["id"])
     graphql("""mutation($i:ID!,$b:ID!){addBlockedBy(input:{issueId:$i,blockingIssueId:$b}){clientMutationId}}""",
@@ -420,10 +431,10 @@ def cmd_drop(args) -> int:
 
 def cmd_comment(args) -> int:
     repo = current_repo()
-    issue = get_issue(repo, issue_num(args.number))
+    issue = get_issue(repo, issue_num(args.number, repo))
     body = read_text(args.body)
     if not body:
-        die("comment needs text (--body or stdin).")
+        die("comment needs text (--body TEXT or --body -).")
     add_comment(issue["id"], body)
     print("commented on #%d" % issue["number"])
     return 0
@@ -457,12 +468,12 @@ def main(argv=None) -> int:
     p = sub.add_parser("add", help="create a card, or put an existing issue on the board")
     p.add_argument("number", nargs="?")
     p.add_argument("--title")
-    p.add_argument("--body")
+    p.add_argument("--body", help="issue body; `-` reads stdin")
     p.set_defaults(fn=cmd_add)
     p = sub.add_parser("move", help="set a card's status")
     p.add_argument("number")
     p.add_argument("status")
-    p.add_argument("--comment")
+    p.add_argument("--comment", help="comment to post first; `-` reads stdin")
     p.set_defaults(fn=cmd_move)
     p = sub.add_parser("order", help="reposition a card")
     p.add_argument("number")
@@ -475,11 +486,11 @@ def main(argv=None) -> int:
     p.set_defaults(fn=cmd_block)
     p = sub.add_parser("drop", help="close as not planned")
     p.add_argument("number")
-    p.add_argument("--comment")
+    p.add_argument("--comment", help="comment to post first; `-` reads stdin")
     p.set_defaults(fn=cmd_drop)
     p = sub.add_parser("comment", help="comment on an issue")
     p.add_argument("number")
-    p.add_argument("--body")
+    p.add_argument("--body", help="comment text; `-` reads stdin")
     p.set_defaults(fn=cmd_comment)
     p = sub.add_parser("search", help="search issues in this repo")
     p.add_argument("terms", nargs="+")
