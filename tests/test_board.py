@@ -73,6 +73,17 @@ class TestBoard(unittest.TestCase):
         tail = board.splice_section("a\n\n%s\nx\n%s\nafter\n" % (S, E), "y")
         self.assertEqual(tail, "a\n\n%s\ny\n%s\nafter\n" % (S, E))
 
+    def test_splice_orphan_start(self):
+        with self.assertRaises(ValueError):
+            board.splice_section("a\n%s\nold\nUSER\n" % S, "x")
+
+    def test_parse_github_remote(self):
+        for u in ("https://github.com/o/n", "https://github.com/o/n.git", "git@github.com:o/n.git",
+                  "ssh://git@github.com/o/n", "ssh://git@github.com/o/n.git"):
+            self.assertEqual(board.parse_github_remote(u), "o/n", u)
+        for u in ("https://gitlab.com/o/n", "", "/tmp/x", "git@github.com:n"):
+            self.assertIsNone(board.parse_github_remote(u), u)
+
     def test_splice_empty(self):
         self.assertEqual(board.splice_section("", "rules"), "%s\nrules\n%s\n" % (S, E))
 
@@ -137,8 +148,9 @@ class TestActivity(unittest.TestCase):
                  item(7, "G", "Done", repo="o/x")]
         items[5]["state_reason"] = "NOT_PLANNED"
         self.assertEqual(board.status_mismatches(items, "o/r"),
-                         ["  #1 A (closed, status In Progress)", "  #2 B (open, status Done)",
-                          "  #5 E (closed, no status)"])
+                         ["  #1 A (closed, status In Progress) -> board move 1 done",
+                          "  #2 B (open, status Done) -> board move 2 in-progress",
+                          "  #5 E (closed, no status) -> board move 5 done"])
 
     def test_unboarded(self):
         items = [item(1, "A", "Triage"), item(2, "B", "Planned", repo="o/x")]

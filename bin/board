@@ -55,7 +55,17 @@ def issue_url_repo(s: str):
     return m.group(1) if m else None
 
 
+def parse_github_remote(url: str):
+    """owner/name from a GitHub https or ssh remote URL, or None."""
+    m = re.fullmatch(r"(?:https://(?:[^@/]+@)?github\.com/|git@github\.com:|ssh://git@github\.com/)"
+                     r"([^/\s]+)/([^/\s]+?)(?:\.git)?/?", url.strip())
+    return "%s/%s" % m.groups() if m else None
+
+
 def splice_section(text: str, section: str) -> str:
+    i = text.find(MARK_START)
+    if i >= 0 and MARK_END not in text[i:]:
+        raise ValueError("start marker without end marker")
     block = "%s\n%s\n%s\n" % (MARK_START, section, MARK_END)
     pat = re.compile(re.escape(MARK_START) + r".*?" + re.escape(MARK_END) + r"\n?", re.S)
     if pat.search(text):
@@ -149,8 +159,15 @@ def git_toplevel() -> Path:
 
 def current_repo() -> dict:
     git_toplevel()
-    r = json.loads(gh("repo", "view", "--json", "owner,name"))
-    owner, name = r["owner"]["login"], r["name"]
+    # gh's own default may be `upstream` in a fork; honor an explicit set-default, else use origin.
+    p = subprocess.run(["gh", "repo", "set-default", "--view"], capture_output=True, text=True)
+    full = p.stdout.strip() if p.returncode == 0 else ""
+    if not re.fullmatch(r"[^/\s]+/[^/\s]+", full):
+        o = subprocess.run(["git", "remote", "get-url", "origin"], capture_output=True, text=True)
+        full = parse_github_remote(o.stdout) if o.returncode == 0 else None
+        if not full:
+            die("No GitHub 'origin' remote in this repo.")
+    owner, name = full.split("/")
     d = graphql("""query($o:String!,$n:String!){repository(owner:$o,name:$n){id
         owner{id __typename ... on User{databaseId} ... on Organization{databaseId}}}}""",
                 o=owner, n=name)["repository"]
@@ -236,7 +253,11 @@ def cmd_setup(args) -> int:
     top = git_toplevel()
     section = (Path(__file__).resolve().parent.parent / "board" / "agents-section.md").read_text().rstrip("\n")
     agents = top / "AGENTS.md"
-    _write_if_changed(agents, splice_section(agents.read_text() if agents.exists() else "", section), "AGENTS.md")
+    try:
+        spliced = splice_section(agents.read_text() if agents.exists() else "", section)
+    except ValueError:
+        die("%s has a board start marker but no end marker; fix the markers and re-run." % agents)
+    _write_if_changed(agents, spliced, "AGENTS.md")
     claude = top / "CLAUDE.md"
     new = claude_pointer(claude.read_text() if claude.exists() else None)
     if new is None:
@@ -431,6 +452,7 @@ def cmd_drop(args) -> int:
 
 def cmd_comment(args) -> int:
     repo = current_repo()
+    find_board(repo)
     issue = get_issue(repo, issue_num(args.number, repo))
     body = read_text(args.body)
     if not body:
@@ -442,6 +464,7 @@ def cmd_comment(args) -> int:
 
 def cmd_search(args) -> int:
     repo = current_repo()
+    find_board(repo)
     q = "repo:%s/%s is:issue %s" % (repo["owner"], repo["name"], " ".join(args.terms))
     nodes = graphql("""query($q:String!){search(type:ISSUE,query:$q,first:50){nodes{... on Issue{number title state
         stateReason}}}}""", q=q)["search"]["nodes"]
@@ -493,9 +516,10 @@ def status_mismatches(items: list, repo: str) -> list:
         done = it["status"] == "Done"
         st = "status %s" % it["status"] if it["status"] else "no status"
         if it["state"] == "CLOSED" and not done and it.get("state_reason") != "NOT_PLANNED":
-            out.append("  #%d %s (closed, %s)" % (it["number"], it["title"], st))
+            out.append("  #%d %s (closed, %s) -> board move %d done" % (it["number"], it["title"], st, it["number"]))
         elif it["state"] == "OPEN" and done:
-            out.append("  #%d %s (open, status Done)" % (it["number"], it["title"]))
+            out.append("  #%d %s (open, status Done) -> board move %d in-progress"
+                       % (it["number"], it["title"], it["number"]))
     return out
 
 
@@ -558,10 +582,11 @@ def cmd_activity(args) -> int:
         section("Status mismatches", status_mismatches(items, full)),
         section("Open issues not on the board", unboarded(issues, items, full)),
     ]))
-    try:
-        write_stamp(stamp, now)
-    except OSError as e:
-        die("Could not save %s: %s" % (stamp, e.strerror))
+    if not args.since:  # an explicit window must not advance the stamp past unseen events
+        try:
+            write_stamp(stamp, now)
+        except OSError as e:
+            die("Could not save %s: %s" % (stamp, e.strerror))
     return 0
 
 
