@@ -25,7 +25,7 @@ Skills, in `skills/`:
 - `next`: bring the board up to date and show it.
 - `board-setup`: create the repo's board and write the upkeep rules into `AGENTS.md`.
 
-Invoke them with `/defer` in Claude Code and OpenCode, or `$defer` in Codex (same for `next` and `board-setup`). They also trigger from plain language, such as "defer this" or "what's next?".
+Invoke them with `/defer` in Claude Code and OpenCode, or `$defer` in Codex (same for `next` and `board-setup`). They also trigger from plain language, such as "defer this" or "what's next?". OpenCode reads both `~/.claude/skills` and `~/.agents/skills` and dedupes by name, so the double install is harmless.
 
 The `board` command (`bin/board`) works on the repo in the current directory:
 
