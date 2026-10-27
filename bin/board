@@ -262,7 +262,7 @@ def blocker_ref(blocker_repo: str, number: int, repo: str) -> str:
 ITEMS_Q = """query($p:ID!,$n:Int!,$c:String){node(id:$p){... on ProjectV2{items(first:$n,after:$c){
   pageInfo{hasNextPage endCursor}
   nodes{id fieldValueByName(name:"Status"){... on ProjectV2ItemFieldSingleSelectValue{name}}
-    content{__typename ... on Issue{id number title state repository{nameWithOwner}
+    content{__typename ... on Issue{id number title state stateReason repository{nameWithOwner}
       blockedBy(first:10){nodes{number state repository{nameWithOwner}}}}}}}}}}"""
 
 
@@ -277,7 +277,7 @@ def board_items(board: dict, repo: str, page_size: int = 100) -> list:
                 continue
             out.append({
                 "item_id": n["id"], "issue_id": c["id"], "number": c["number"], "title": c["title"],
-                "state": c["state"], "repo": c["repository"]["nameWithOwner"],
+                "state": c["state"], "state_reason": c["stateReason"], "repo": c["repository"]["nameWithOwner"],
                 "status": (n["fieldValueByName"] or {}).get("name"),
                 "blocked_by": [blocker_ref(b["repository"]["nameWithOwner"], b["number"], repo)
                                for b in c["blockedBy"]["nodes"] if b["state"] == "OPEN"]})
@@ -460,6 +460,111 @@ def cmd_list(args) -> int:
     return 0
 
 
+STAMP_FMT = "%Y-%m-%dT%H:%M:%SZ"
+
+
+def read_stamp(path: Path):
+    try:
+        return datetime.strptime(path.read_text().strip(), STAMP_FMT).replace(tzinfo=timezone.utc)
+    except (OSError, ValueError):
+        return None
+
+
+def write_stamp(path: Path, now: datetime):
+    path.write_text(now.strftime(STAMP_FMT) + "\n")
+
+
+def section(title: str, lines: list) -> str:
+    return "%s\n%s" % (title, "\n".join(lines) if lines else "  (none)")
+
+
+def fmt_pr(pr: dict, verb: str, when: str) -> list:
+    body = (pr["body"] or "").replace("\r\n", "\n").strip()
+    return ["  #%d %s (%s %s)" % (pr["number"], pr["title"], verb, when[:10])] + \
+        ["    " + l if l.strip() else "" for l in body.splitlines()]
+
+
+def status_mismatches(items: list, repo: str) -> list:
+    """Local cards that are closed but not Done (dropped cards excepted), or open but Done."""
+    out = []
+    for it in items:
+        if it["repo"] != repo:
+            continue
+        done = it["status"] == "Done"
+        st = "status %s" % it["status"] if it["status"] else "no status"
+        if it["state"] == "CLOSED" and not done and it.get("state_reason") != "NOT_PLANNED":
+            out.append("  #%d %s (closed, %s)" % (it["number"], it["title"], st))
+        elif it["state"] == "OPEN" and done:
+            out.append("  #%d %s (open, status Done)" % (it["number"], it["title"]))
+    return out
+
+
+def unboarded(issues: list, items: list, repo: str) -> list:
+    on = {i["number"] for i in items if i["repo"] == repo}
+    return ["  #%d %s" % (i["number"], i["title"]) for i in issues if i["number"] not in on]
+
+
+def paged(query: str, conn, **variables) -> list:
+    """Every node of a connection; `query` takes $c:String, `conn` picks the connection from the data."""
+    out, cursor = [], None
+    while True:
+        x = conn(graphql(query, c=cursor, **variables))
+        out += x["nodes"]
+        if not x["pageInfo"]["hasNextPage"]:
+            return out
+        cursor = x["pageInfo"]["endCursor"]
+
+
+SEARCH_PR_Q = """query($q:String!,$c:String){search(type:ISSUE,query:$q,first:100,after:$c){
+  pageInfo{hasNextPage endCursor} nodes{... on PullRequest{number title body mergedAt updatedAt}}}}"""
+OPEN_ISSUES_Q = """query($o:String!,$n:String!,$c:String){repository(owner:$o,name:$n){
+  issues(states:OPEN,first:100,after:$c){pageInfo{hasNextPage endCursor} nodes{number title}}}}"""
+HISTORY_Q = """query($o:String!,$n:String!,$s:GitTimestamp!,$c:String){repository(owner:$o,name:$n){
+  defaultBranchRef{target{... on Commit{history(first:100,since:$s,after:$c){
+    pageInfo{hasNextPage endCursor} nodes{oid messageHeadline}}}}}}}"""
+
+
+def cmd_activity(args) -> int:
+    now = datetime.now(timezone.utc).replace(microsecond=0)
+    repo = current_repo()
+    full = "%s/%s" % (repo["owner"], repo["name"])
+    git_dir = subprocess.run(["git", "rev-parse", "--git-common-dir"], capture_output=True, text=True).stdout.strip()
+    stamp = Path(git_dir) / "board-last-activity"
+    try:
+        since = parse_since(args.since, now) if args.since else read_stamp(stamp) or parse_since("14d", now)
+    except ValueError as e:
+        die(str(e))
+    board = find_board(repo)
+    ts = since.strftime(STAMP_FMT)
+    o, n = repo["owner"], repo["name"]
+
+    def prs(q):
+        return paged(SEARCH_PR_Q, lambda d: d["search"], q="repo:%s is:pr %s" % (full, q))
+
+    merged = [l for pr in prs("is:merged merged:>=" + ts) for l in fmt_pr(pr, "merged", pr["mergedAt"])]
+    updated = [l for pr in prs("is:open updated:>=" + ts) for l in fmt_pr(pr, "updated", pr["updatedAt"])]
+    branch = graphql("query($o:String!,$n:String!){repository(owner:$o,name:$n){defaultBranchRef{name}}}",
+                     o=o, n=n)["repository"]["defaultBranchRef"]
+    commits = paged(HISTORY_Q, lambda d: d["repository"]["defaultBranchRef"]["target"]["history"],
+                    o=o, n=n, s=ts) if branch else []
+    items = board_items(board, repo=full)
+    issues = paged(OPEN_ISSUES_Q, lambda d: d["repository"]["issues"], o=o, n=n)
+    print("Activity in %s since %s\n" % (full, ts))
+    print("\n\n".join([
+        section("Merged PRs", merged),
+        section("Open PRs updated", updated),
+        section("Commits on %s" % (branch or {}).get("name", "(no default branch)"),
+                ["  %s %s" % (c["oid"][:7], c["messageHeadline"]) for c in commits]),
+        section("Status mismatches", status_mismatches(items, full)),
+        section("Open issues not on the board", unboarded(issues, items, full)),
+    ]))
+    try:
+        write_stamp(stamp, now)
+    except OSError as e:
+        die("Could not save %s: %s" % (stamp, e.strerror))
+    return 0
+
+
 def main(argv=None) -> int:
     ap = argparse.ArgumentParser(prog="board")
     sub = ap.add_subparsers(dest="cmd", required=True)
@@ -498,6 +603,9 @@ def main(argv=None) -> int:
     p = sub.add_parser("list", help="show the board")
     p.add_argument("--all", action="store_true", help="include Done")
     p.set_defaults(fn=cmd_list)
+    p = sub.add_parser("activity", help="recent PRs, commits, status mismatches, unboarded issues")
+    p.add_argument("--since", help="14d, 2w, 36h or YYYY-MM-DD (default: since the last run, else 14d)")
+    p.set_defaults(fn=cmd_activity)
     args = ap.parse_args(argv)
     return args.fn(args)
 

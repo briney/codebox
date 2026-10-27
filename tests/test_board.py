@@ -129,5 +129,44 @@ class TestBoard(unittest.TestCase):
         self.assertFalse(board.missing_scope("gh: Not Found (HTTP 404)", ""))
 
 
+class TestActivity(unittest.TestCase):
+    def test_status_mismatches(self):
+        items = [item(1, "A", "In Progress", state="CLOSED"), item(2, "B", "Done"),
+                 item(3, "C", "Done", state="CLOSED"), item(4, "D", "Planned"),
+                 item(5, "E", None, state="CLOSED"), item(6, "F", "Triage", state="CLOSED"),
+                 item(7, "G", "Done", repo="o/x")]
+        items[5]["state_reason"] = "NOT_PLANNED"
+        self.assertEqual(board.status_mismatches(items, "o/r"),
+                         ["  #1 A (closed, status In Progress)", "  #2 B (open, status Done)",
+                          "  #5 E (closed, no status)"])
+
+    def test_unboarded(self):
+        items = [item(1, "A", "Triage"), item(2, "B", "Planned", repo="o/x")]
+        issues = [{"number": 1, "title": "A"}, {"number": 2, "title": "B"}, {"number": 3, "title": "C"}]
+        self.assertEqual(board.unboarded(issues, items, "o/r"), ["  #2 B", "  #3 C"])
+
+    def test_stamp_roundtrip(self):
+        import tempfile
+        with tempfile.TemporaryDirectory() as d:
+            p = Path(d) / "board-last-activity"
+            self.assertIsNone(board.read_stamp(p))
+            now = datetime(2026, 10, 27, 13, 5, 9, tzinfo=UTC)
+            board.write_stamp(p, now)
+            self.assertEqual(board.read_stamp(p), now)
+            p.write_text("garbage\n")
+            self.assertIsNone(board.read_stamp(p))
+
+    def test_fmt_pr(self):
+        pr = {"number": 4, "title": "Fix", "body": "Closes #1\r\n\r\nmore"}
+        self.assertEqual(board.fmt_pr(pr, "merged", "2026-10-27T10:00:00Z"),
+                         ["  #4 Fix (merged 2026-10-27)", "    Closes #1", "", "    more"])
+        self.assertEqual(board.fmt_pr({"number": 5, "title": "T", "body": None}, "updated", "2026-10-26"),
+                         ["  #5 T (updated 2026-10-26)"])
+
+    def test_section(self):
+        self.assertEqual(board.section("Open PRs updated", []), "Open PRs updated\n  (none)")
+        self.assertEqual(board.section("X", ["  a", "  b"]), "X\n  a\n  b")
+
+
 if __name__ == "__main__":
     unittest.main()
