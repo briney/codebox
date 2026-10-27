@@ -104,6 +104,14 @@ def die(msg: str):
     sys.exit(1)
 
 
+SCOPE_MSG = "Missing project scope. Run: gh auth refresh -h github.com -s project"
+
+
+def missing_scope(stderr: str, stdout: str) -> bool:
+    return ("INSUFFICIENT_SCOPES" in stdout or "INSUFFICIENT_SCOPES" in stderr
+            or "project scope" in stderr or "read:project" in stderr or "required scopes" in stderr)
+
+
 def gh(*args: str, stdin=None) -> str:
     try:
         p = subprocess.run(["gh"] + list(args), input=stdin, capture_output=True, text=True)
@@ -111,8 +119,8 @@ def gh(*args: str, stdin=None) -> str:
         die("gh not found. Install the GitHub CLI: https://cli.github.com")
     if p.returncode != 0:
         err = p.stderr.strip()
-        if "INSUFFICIENT_SCOPES" in err or "project scope" in err:
-            die("Missing project scope. Run: gh auth refresh -h github.com -s project")
+        if missing_scope(err, p.stdout):
+            die(SCOPE_MSG)
         die(err.splitlines()[-1] if err else "gh %s failed" % " ".join(args[:2]))
     return p.stdout
 
@@ -121,10 +129,7 @@ def graphql(query: str, **variables) -> dict:
     out = gh("api", "graphql", "--input", "-", stdin=json.dumps({"query": query, "variables": variables}))
     res = json.loads(out)
     if res.get("errors"):
-        msg = "; ".join(e.get("message", "?") for e in res["errors"])
-        if "INSUFFICIENT_SCOPES" in json.dumps(res["errors"]):
-            msg = "Missing project scope. Run: gh auth refresh -h github.com -s project"
-        die(msg)
+        die("; ".join(e.get("message", "?") for e in res["errors"]))
     return res["data"]
 
 

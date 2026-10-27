@@ -102,6 +102,15 @@ class TestBoard(unittest.TestCase):
         with self.assertRaisesRegex(ValueError, "Triage"):
             board.plan_status_options(["Backlog", "Done"], False)
 
+    def test_missing_scope(self):
+        err = ("gh: Your token has not been granted the required scopes to execute this query. "
+               "The 'id' field requires one of the following scopes: ['read:project'], "
+               "but your token has only been granted the: ['repo'] scopes.")
+        out = '{"errors":[{"type":"INSUFFICIENT_SCOPES","message":"x"}]}'
+        self.assertTrue(board.missing_scope(err, ""))
+        self.assertTrue(board.missing_scope("gh: x", out))
+        self.assertFalse(board.missing_scope("gh: Not Found (HTTP 404)", ""))
+
 
 if __name__ == "__main__":
     unittest.main()
