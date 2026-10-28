@@ -428,10 +428,36 @@ class TestUpdate(Tmp):
 
     def test_update_conflict_leaves_checkout(self):
         self.run_cb("install")
+        before = codebox.record_path(self.h).read_text()
+        links = sorted(os.readlink(l["path"]) for l in json.loads(before)["links"])
         (self.h / ".claude/skills/codebox-new").mkdir()
         rc, out, err = self.run_cb("update")
         self.assertEqual(rc, 1)
         self.assertIn("codebox-new", err)
+        self.assertEqual(codebox.release_of(self.home), "v0.1.0")
+        self.assertEqual(codebox.record_path(self.h).read_text(), before)
+        self.assertEqual(links, sorted(os.readlink(l["path"]) for l in json.loads(before)["links"]))
+
+    def test_update_conflict_from_newly_detected_harness(self):
+        self.run_cb("install")
+        before = codebox.record_path(self.h).read_text()
+        (self.h / ".codex").mkdir()
+        (self.h / ".agents/skills").mkdir(parents=True)
+        (self.h / ".agents/skills/codebox-new").write_text("mine")
+        rc, out, err = self.run_cb("update")
+        self.assertEqual(rc, 1)
+        self.assertIn(".agents/skills/codebox-new", err)
+        self.assertEqual(codebox.release_of(self.home), "v0.1.0")
+        self.assertEqual(codebox.record_path(self.h).read_text(), before)
+
+    def test_update_rolls_back_checkout_when_install_fails(self):
+        self.run_cb("install")
+        with mock.patch.object(codebox, "install", return_value=1):
+            self.assertEqual(self.run_cb("update")[0], 1)
+        self.assertEqual(codebox.release_of(self.home), "v0.1.0")
+        with mock.patch.object(codebox, "install", side_effect=ValueError("boom")):
+            rc, out, err = self.run_cb("update")
+        self.assertEqual((rc, err), (1, "codebox: boom\n"))
         self.assertEqual(codebox.release_of(self.home), "v0.1.0")
 
 

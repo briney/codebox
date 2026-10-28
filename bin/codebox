@@ -288,7 +288,7 @@ def version_diff(old: list, new: list) -> list:
     return lines
 
 
-def update(user_home: Path) -> int:
+def update(user_home: Path, which=shutil.which) -> int:
     user_home = Path(user_home)
     rec = read_record(user_home)
     if not rec:
@@ -313,7 +313,8 @@ def update(user_home: Path) -> int:
     with tempfile.TemporaryDirectory() as tmp:
         export_tree(home, new, Path(tmp))
         new_plugins = load_plugins(Path(tmp))
-    desired = desired_links(new_plugins, home, rec["harnesses"], user_home)
+    chosen = set(rec["harnesses"]) | set(detect_harnesses(user_home, which))
+    desired = desired_links(new_plugins, home, [h for h in HARNESSES if h in chosen], user_home)
     conflicts = plan(desired, rec, user_home)[2]
     if conflicts:
         return report_conflicts(conflicts)
@@ -322,8 +323,13 @@ def update(user_home: Path) -> int:
         print(f"codebox: could not check out {new}: {(r.stderr.strip().splitlines() or [''])[-1]}", file=sys.stderr)
         return 1
     # ponytail: the old release's code wires the new tree; if the manifest format ever changes, re-exec the new bin/codebox instead
-    rc = install(home, user_home, None)
+    try:
+        rc = install(home, user_home, None, which)
+    except BaseException:
+        _git(home, "checkout", "--quiet", current)
+        raise
     if rc:
+        _git(home, "checkout", "--quiet", current)
         return rc
     print(f"codebox {old} \u2192 {new}")
     print("\n".join(version_diff(old_plugins, new_plugins) or ["  (no plugin changes)"]))
@@ -344,7 +350,7 @@ def main(argv=None, user_home=None, env=None, which=shutil.which) -> int:
         if args.cmd == "install":
             return install(codebox_home(env, user_home), user_home, args.harness, which)
         if args.cmd == "update":
-            return update(user_home)
+            return update(user_home, which)
         return uninstall(user_home)
     except ValueError as e:
         print(f"codebox: {e}", file=sys.stderr)
