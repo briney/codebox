@@ -61,6 +61,13 @@ class TestBoard(unittest.TestCase):
         with self.assertRaises(ValueError):
             board.parse_issue_ref("abc")
 
+    def test_stale_section(self):
+        cur = board.splice_section("", "new text")
+        self.assertFalse(board.stale_section(cur, "new text"))
+        self.assertTrue(board.stale_section(board.splice_section("", "old text"), "new text"))
+        self.assertFalse(board.stale_section("# no markers\n", "new text"))  # no section: nothing to hint
+        self.assertFalse(board.stale_section(S + "\nx\n", "new text"))      # orphan start: setup reports it
+
     def test_splice_append(self):
         self.assertEqual(board.splice_section("# Repo\n", "rules"), "# Repo\n\n%s\nrules\n%s\n" % (S, E))
 
