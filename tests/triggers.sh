@@ -6,6 +6,8 @@ set -uo pipefail
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 WORK="$(mktemp -d)"
 trap 'rm -rf "$WORK"' EXIT
+# Ctrl-C: timeout runs the harness in its own process group, out of the terminal's reach, so stop it here.
+trap 'kill "${tpid:-}" 2>/dev/null; exit 130' INT TERM
 
 # Temp repo, no remote: any `board` call fails harmlessly with "no board".
 mkdir "$WORK/repo" && cd "$WORK/repo" && git init -q
@@ -37,12 +39,12 @@ run() {
 
 # fired HARNESS SKILL FILE: does the event output show SKILL being activated? (exact name, so `next` != `codebox-next`)
 #   claude:   Skill tool_use with input.skill == SKILL
-#   codex:    a command that reads <SKILL>/SKILL.md
+#   codex:    a command_execution whose command (not its output) names <SKILL>/SKILL.md
 #   opencode: skill tool call with input.id == SKILL
 fired() {
   case "$1" in
     claude)   grep -q "\"name\":\"Skill\",\"input\":{\"skill\":\"$2\"[,}]" "$3" ;;
-    codex)    grep -q "/$2/SKILL\.md" "$3" ;;
+    codex)    grep -qE "\"command\":\"([^\"\\\\]|\\\\.)*/$2/SKILL\\.md" "$3" ;;
     opencode) grep -q "\"tool\":\"skill\",\"state\":{\"status\":\"[a-z]*\",\"input\":{\"id\":\"$2\"" "$3" ;;
   esac
 }
@@ -60,8 +62,10 @@ for h in "${harnesses[@]}"; do
   if ! command -v "$h" >/dev/null; then echo "SKIP $h (not on PATH)"; continue; fi
   for i in "${!PHRASES[@]}"; do
     out="$WORK/$h-$i.json"
-    timeout 300 bash -c "$(declare -f run); run $h \"\$1\"" _ "${PHRASES[$i]}" >"$out" 2>"$out.err" </dev/null
-    st=$?
+    # In the background so a Ctrl-C trap runs at once instead of after the call; timeout kills its whole group.
+    timeout 300 bash -c "$(declare -f run); run $h \"\$1\"" _ "${PHRASES[$i]}" >"$out" 2>"$out.err" </dev/null &
+    tpid=$!
+    wait "$tpid"; st=$?
     if (( st != 0 )); then
       echo "SKIP $h: ${PHRASES[$i]} (exit $st: $(head -c 120 "$out.err" | tr '\n' ' '))"; continue
     fi

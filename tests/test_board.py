@@ -61,6 +61,19 @@ class TestBoard(unittest.TestCase):
         with self.assertRaises(ValueError):
             board.parse_issue_ref("abc")
 
+    def test_read_repo_file(self):
+        import contextlib, io, tempfile
+        with tempfile.TemporaryDirectory() as d:
+            p = Path(d) / "AGENTS.md"
+            self.assertIsNone(board.read_repo_file(p))
+            p.write_text("hi\n")
+            self.assertEqual(board.read_repo_file(p), "hi\n")
+            p.write_bytes(b"\xff\xfe")
+            err = io.StringIO()
+            with contextlib.redirect_stderr(err), self.assertRaises(SystemExit):
+                board.read_repo_file(p)
+            self.assertEqual(err.getvalue(), "Could not read %s: not UTF-8 text\n" % p)
+
     def test_stale_section(self):
         cur = board.splice_section("", "new text")
         self.assertFalse(board.stale_section(cur, "new text"))

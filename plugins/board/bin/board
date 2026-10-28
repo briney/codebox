@@ -216,6 +216,14 @@ def cmd_find(args) -> int:
     return 0
 
 
+def read_repo_file(path: Path):
+    """Text of path, or None if it doesn't exist; exits with a one-line error if it can't be read."""
+    try:
+        return path.read_text() if path.exists() else None
+    except (OSError, UnicodeDecodeError) as e:
+        die("Could not read %s: %s" % (path, "not UTF-8 text" if isinstance(e, UnicodeDecodeError) else e.strerror))
+
+
 def _write_if_changed(path: Path, new: str, label: str):
     old = path.read_text() if path.exists() else None
     if old == new:
@@ -264,7 +272,7 @@ def cmd_setup(args) -> int:
     top = git_toplevel()
     section = section_text()
     agents = top / "AGENTS.md"
-    old = agents.read_text() if agents.exists() else ""
+    old = read_repo_file(agents) or ""
     try:
         spliced = splice_section(old, section)
     except ValueError:
@@ -275,7 +283,7 @@ def cmd_setup(args) -> int:
     else:
         _write_if_changed(agents, spliced, "AGENTS.md")
     claude = top / "CLAUDE.md"
-    new = claude_pointer(claude.read_text() if claude.exists() else None)
+    new = claude_pointer(read_repo_file(claude))
     if new is None:
         print("CLAUDE.md already points at AGENTS.md")
     else:
@@ -603,8 +611,11 @@ def cmd_activity(args) -> int:
             write_stamp(stamp, now)
         except OSError as e:
             die("Could not save %s: %s" % (stamp, e.strerror))
-    agents = git_toplevel() / "AGENTS.md"
-    if agents.exists() and stale_section(agents.read_text(), section_text()):
+    try:  # the hint is a nicety; an unreadable AGENTS.md is setup's to report
+        agents = (git_toplevel() / "AGENTS.md").read_text()
+    except (OSError, UnicodeDecodeError):
+        agents = ""
+    if stale_section(agents, section_text()):
         print(STALE_HINT, file=sys.stderr)
     return 0
 

@@ -35,7 +35,7 @@ class TestVersion(unittest.TestCase):
 class TestLoadPlugins(Tmp):
     def test_real_repo(self):
         (p,) = codebox.load_plugins(REPO)
-        self.assertEqual((p["name"], p["version"]), ("board", "1.0.0"))
+        self.assertEqual((p["name"], p["version"]), ("board", "1.0.1"))
         self.assertEqual(set(p["skills"]), {"codebox-defer", "codebox-next", "codebox-board-setup"})
         self.assertEqual(p["commands"], {"board": "plugins/board/bin/board"})
         self.assertEqual(p["dir"], "plugins/board")
@@ -89,6 +89,16 @@ class TestLoadPlugins(Tmp):
         d["skills"]["codebox-next"]["version"] = "1.0"
         m.write_text(json.dumps(d))
         with self.assertRaisesRegex(ValueError, "codebox-next"):
+            codebox.load_plugins(t)
+
+        t = tree("g")
+        (t / "plugins/board/plugin.json").write_text("{")
+        with self.assertRaisesRegex(ValueError, "^plugin board: plugin.json: "):
+            codebox.load_plugins(t)
+
+        t = tree("h")
+        (t / "plugins/board/skills/codebox-next/SKILL.md").unlink()
+        with self.assertRaisesRegex(ValueError, "^plugin board: skill codebox-next has no SKILL.md$"):
             codebox.load_plugins(t)
 
 
@@ -245,6 +255,12 @@ class TestInstall(Tmp):
         self.assertIn("skipped (not found): codex, opencode", out)
         self.assertIn('export PATH="$HOME/.local/bin:$PATH"', out)
 
+    def test_install_path_hint_uses_given_env(self):
+        env = {"CODEBOX_HOME": str(self.tree), "PATH": str(self.h / ".local/bin")}
+        rc, out, err = self.run_cb("install", env=env)
+        self.assertEqual(rc, 0, err)
+        self.assertNotIn("export PATH", out)
+
     def test_install_idempotent(self):
         self.run_cb("install")
         before = codebox.record_path(self.h).read_text()
@@ -387,7 +403,7 @@ class TestInstall(Tmp):
         (self.h / ".agents").write_text("a file")
         rc, out, err = self.run_cb("install")
         self.assertEqual(rc, 1)
-        self.assertIn(str(self.h / ".agents"), err)
+        self.assertEqual(err.count(f"  {self.h / '.agents'}\n"), 1, err)
         self.assertNotIn("Traceback", err)
         self.assertTrue(os.path.islink(self.h / ".claude/skills/codebox-next"))
         self.assertEqual(codebox.record_path(self.h).read_text(), before)
@@ -416,6 +432,15 @@ class TestInstall(Tmp):
             rc, out, err = self.run_cb("uninstall", env=env)
         self.assertEqual(rc, 1)
         self.assertIn("could not fully remove", err)
+        self.assertFalse(codebox.record_path(self.h).exists())
+
+    def test_uninstall_tolerates_home_deleted_by_hand(self):
+        fake_codebox_tree(self.h / ".codebox")
+        env = {"PATH": ""}
+        self.run_cb("install", env=env)
+        __import__("shutil").rmtree(self.h / ".codebox")
+        rc, out, err = self.run_cb("uninstall", env=env)
+        self.assertEqual((rc, err), (0, ""))
         self.assertFalse(codebox.record_path(self.h).exists())
 
 
@@ -457,6 +482,25 @@ class TestUpdate(Tmp):
             "    codebox-next 1.0.0 \u2192 1.1.0  show blocked cards last",
             "  + newplugin 0.1.0  first release"])
 
+    def test_version_diff_skills_and_skipped_versions(self):
+        def plug(name, version, changes, **skills):
+            return {"name": name, "version": version, "changes": changes,
+                    "skills": {s: {"version": v, "changes": c} for s, (v, c) in skills.items()}}
+        one = {"1.0.0": "a"}
+        old = [plug("p", "1.0.0", one, keep=("1.0.0", one), gone=("1.0.0", one)),
+               plug("q", "2.0.0", {"2.0.0": "q"}),
+               plug("r", "1.0.0", one, b=("1.0.0", one))]
+        new = [plug("p", "1.2.0", {"1.0.0": "a", "1.1.0": "b", "1.2.0": "c"},
+                    keep=("1.0.0", one), fresh=("1.0.0", {"1.0.0": "new"})),
+               plug("r", "1.0.0", one)]
+        self.assertEqual(codebox.version_diff(old, new), [
+            "  p 1.0.0 → 1.2.0  b; c",
+            "    + fresh 1.0.0  new",
+            "    - gone",
+            "  - q 2.0.0",
+            "  r 1.0.0",
+            "    - b"])
+
     def test_update_end_to_end(self):
         self.assertEqual(self.run_cb("install")[0], 0)
         rc, out, err = self.run_cb("update")
@@ -471,6 +515,16 @@ class TestUpdate(Tmp):
     def test_update_not_installed(self):
         rc, out, err = self.run_cb("update")
         self.assertEqual((rc, err), (1, "codebox: not installed; run codebox install\n"))
+
+    def test_update_fetch_failure_changes_nothing(self):
+        self.run_cb("install")
+        before = codebox.record_path(self.h).read_text()
+        git(self.home, "remote", "set-url", "origin", str(self.tmp / "gone"))
+        rc, out, err = self.run_cb("update")
+        self.assertEqual(rc, 1)
+        self.assertTrue(err.startswith("codebox: could not fetch: ") and err.count("\n") == 1, err)
+        self.assertEqual(codebox.release_of(self.home), "v0.1.0")
+        self.assertEqual(codebox.record_path(self.h).read_text(), before)
 
     def test_update_refuses_dirty(self):
         self.run_cb("install")
