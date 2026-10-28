@@ -118,26 +118,29 @@ class TestClassify(Tmp):
         plain.mkdir()
         (h / "d").mkdir()
         c = codebox.classify
-        self.assertEqual(c(h / "nothing", set()), "absent")
+        self.assertEqual(c(h / "nothing", {}), "absent")
         ours = h / "ours"
         ours.symlink_to(plain)
-        self.assertEqual(c(ours, {str(ours)}), "ours")
+        self.assertEqual(c(ours, {str(ours): str(plain)}), "ours")
         old = h / "old"
         old.symlink_to(tree / "plugins")
-        self.assertEqual(c(old, set()), "old")
+        self.assertEqual(c(old, {}), "old")
+        repointed = h / "repointed"
+        repointed.symlink_to(plain)
+        self.assertEqual(c(repointed, {str(repointed): "/was/here"}), "foreign")
         dang = h / "dang"
         dang.symlink_to("/gone/codebox/x")
-        self.assertEqual(c(dang, set()), "old")
+        self.assertEqual(c(dang, {}), "old")
         dang2 = h / "dang2"
         dang2.symlink_to("/gone/other")
-        self.assertEqual(c(dang2, set()), "foreign")
+        self.assertEqual(c(dang2, {}), "foreign")
         nongit = h / "nongit"
         nongit.symlink_to(plain)
-        self.assertEqual(c(nongit, set()), "foreign")
-        self.assertEqual(c(h / "d", set()), "foreign")
+        self.assertEqual(c(nongit, {}), "foreign")
+        self.assertEqual(c(h / "d", {}), "foreign")
         oth = h / "oth"
         oth.symlink_to(other / "plugins")
-        self.assertEqual(c(oth, set()), "foreign")
+        self.assertEqual(c(oth, {}), "foreign")
 
 
     def test_classify_ignores_git_env(self):
@@ -148,7 +151,18 @@ class TestClassify(Tmp):
         link = h / "link"
         link.symlink_to(plain)
         with mock.patch.dict(os.environ, {"GIT_DIR": str(tree / ".git")}):
-            self.assertEqual(codebox.classify(link, set()), "foreign")
+            self.assertEqual(codebox.classify(link, {}), "foreign")
+
+
+class TestPlanRepointed(Tmp):
+    def test_repointed_link_is_untouched(self):
+        h = self.tmp
+        mine = h / "mine"
+        mine.symlink_to(h)
+        rec = {"links": [{"path": str(mine), "target": "/was/here"}]}
+        self.assertEqual(codebox.plan({}, rec, h), ({}, [], []))
+        _, _, conflicts = codebox.plan({str(mine): {"target": "/t", "harnesses": []}}, rec, h)
+        self.assertEqual(conflicts, [str(mine)])
 
 
 class TestPlan(Tmp):
@@ -175,7 +189,9 @@ class TestPlan(Tmp):
             str(wrong): {"target": str(tree / "plugins/board/skills/codebox-next"), "harnesses": ["claude"]},
             str(h / ".claude/skills/new"): {"target": "/t/new", "harnesses": ["claude"]},
         }
-        record = {"links": [{"path": str(good)}, {"path": str(stale)}, {"path": str(wrong)}]}
+        record = {"links": [{"path": str(good), "target": str(tree / "bin/codebox")},
+                            {"path": str(stale), "target": "/elsewhere2"},
+                            {"path": str(wrong), "target": "/old/place"}]}
         creates, removes, conflicts = codebox.plan(desired, record, h)
         self.assertEqual(conflicts, [str(board)])
         self.assertIn(str(old), removes)
@@ -293,6 +309,27 @@ class TestInstall(Tmp):
         with mock.patch.object(codebox.subprocess, "run", side_effect=FileNotFoundError):
             rc, out, err = self.run_cb("install")
         self.assertEqual((rc, err), (1, "codebox: needs git\n"))
+        self.assertFalse((self.h / ".claude/skills/codebox-next").exists())
+        self.assertFalse(codebox.record_path(self.h).exists())
+
+    def test_relative_codebox_home(self):
+        cwd = os.getcwd()
+        os.chdir(self.tree.parent)
+        self.addCleanup(os.chdir, cwd)
+        rc, out, err = self.run_cb("install", env={"CODEBOX_HOME": "tree", "PATH": ""})
+        self.assertEqual(rc, 0, err)
+        self.assertTrue((self.h / ".claude/skills/codebox-next/SKILL.md").exists())
+        self.assertTrue((self.h / ".local/bin/board").resolve().exists())
+
+    def test_uninstall_leaves_repointed_link(self):
+        self.run_cb("install")
+        nxt = self.h / ".claude/skills/codebox-next"
+        nxt.unlink()
+        nxt.symlink_to(self.tmp)
+        rc, out, err = self.run_cb("uninstall")
+        self.assertEqual(rc, 0, err)
+        self.assertTrue(nxt.is_symlink())
+        self.assertIn("left", out)
 
     def test_uninstall_not_installed(self):
         rc, out, err = self.run_cb("uninstall")
