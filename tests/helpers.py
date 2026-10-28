@@ -28,3 +28,29 @@ def fake_codebox_tree(dest, origin="https://github.com/briney/codebox.git"):
     git(dest, "commit", "-q", "-m", "init")
     git(dest, "remote", "add", "origin", origin)
     return dest
+
+
+def release_repo(tmp):
+    """A codebox tree tagged v0.1.0, then v0.2.0 (board bumped, plugin newplugin added); left at v0.2.0."""
+    import json
+    root = fake_codebox_tree(Path(tmp) / "release")
+    git(root, "tag", "v0.1.0")
+    board = root / "plugins/board/plugin.json"
+    m = json.loads(board.read_text())
+    m["version"] = "1.1.0"
+    m["changes"]["1.1.0"] = "next: shows blocked cards last"
+    m["skills"]["codebox-next"]["version"] = "1.1.0"
+    m["skills"]["codebox-next"]["changes"]["1.1.0"] = "show blocked cards last"
+    board.write_text(json.dumps(m, indent=2) + "\n")
+    with open(root / "plugins/board/skills/codebox-next/SKILL.md", "a") as f:
+        f.write("\nShow blocked cards last.\n")
+    skill = root / "plugins/newplugin/skills/codebox-new"
+    skill.mkdir(parents=True)
+    (skill / "SKILL.md").write_text("---\nname: codebox-new\ndescription: new\n---\nnew\n")
+    (root / "plugins/newplugin/plugin.json").write_text(json.dumps({
+        "name": "newplugin", "version": "0.1.0", "changes": {"0.1.0": "first release"},
+        "skills": {"codebox-new": {"version": "0.1.0", "changes": {"0.1.0": "first release"}}}}, indent=2) + "\n")
+    git(root, "add", "-A")
+    git(root, "commit", "-q", "-m", "v0.2.0")
+    git(root, "tag", "v0.2.0")
+    return root

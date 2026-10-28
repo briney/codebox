@@ -7,7 +7,9 @@ import unittest
 from unittest import mock
 from pathlib import Path
 
-from helpers import REPO, codebox, fake_codebox_tree
+import subprocess
+
+from helpers import REPO, codebox, fake_codebox_tree, git, release_repo
 
 
 class Tmp(unittest.TestCase):
@@ -362,6 +364,75 @@ class TestInstall(Tmp):
         self.assertEqual(rc, 0, err)
         self.assertEqual(board.read_text(), "mine")
         self.assertIn(f"left {board} (no longer codebox's link)", out)
+
+
+class TestUpdate(Tmp):
+    def setUp(self):
+        super().setUp()
+        self.h = self.tmp / "home"
+        (self.h / ".claude").mkdir(parents=True)
+        self.rel = release_repo(self.tmp)
+        self.home = self.h / ".codebox"
+        subprocess.run(["git", "clone", "-q", str(self.rel), str(self.home)], check=True)
+        git(self.home, "checkout", "-q", "v0.1.0")
+
+    def run_cb(self, *argv):
+        out, err = io.StringIO(), io.StringIO()
+        with contextlib.redirect_stdout(out), contextlib.redirect_stderr(err):
+            rc = codebox.main(list(argv), user_home=self.h, env={"PATH": ""}, which=lambda n: None)
+        return rc, out.getvalue(), err.getvalue()
+
+    def test_newest_tag(self):
+        r = self.tmp / "r"
+        self.assertIsNone(codebox.newest_tag(fake_codebox_tree(r)))
+        for t in ("v0.9.0", "v0.10.0", "vfoo"):
+            git(r, "tag", t)
+        self.assertEqual(codebox.newest_tag(r), "v0.10.0")
+
+    def test_notes_between(self):
+        ch = {"1.0.0": "a", "1.1.0": "b", "1.2.0": "c"}
+        self.assertEqual(codebox.notes_between(ch, "1.0.0", "1.2.0"), "b; c")
+        self.assertEqual(codebox.notes_between(ch, None, "1.0.0"), "a")
+
+    def test_version_diff(self):
+        old, new = self.tmp / "old", self.tmp / "new"
+        old.mkdir(), new.mkdir()
+        codebox.export_tree(self.rel, "v0.1.0", old)
+        codebox.export_tree(self.rel, "v0.2.0", new)
+        self.assertEqual(codebox.version_diff(codebox.load_plugins(old), codebox.load_plugins(new)), [
+            "  board 1.0.0 \u2192 1.1.0  next: shows blocked cards last",
+            "    codebox-next 1.0.0 \u2192 1.1.0  show blocked cards last",
+            "  + newplugin 0.1.0  first release"])
+
+    def test_update_end_to_end(self):
+        self.assertEqual(self.run_cb("install")[0], 0)
+        rc, out, err = self.run_cb("update")
+        self.assertEqual(rc, 0, err)
+        self.assertEqual(codebox.release_of(self.home), "v0.2.0")
+        self.assertTrue((self.h / ".claude/skills/codebox-new").exists())
+        self.assertIn("codebox v0.1.0 \u2192 v0.2.0\n  board 1.0.0 \u2192 1.1.0  next: shows blocked cards last", out)
+        self.assertEqual(json.loads(codebox.record_path(self.h).read_text())["release"], "v0.2.0")
+        rc, out, err = self.run_cb("update")
+        self.assertEqual((rc, out.strip().splitlines()[-1]), (0, "codebox v0.2.0 is up to date"))
+
+    def test_update_not_installed(self):
+        rc, out, err = self.run_cb("update")
+        self.assertEqual((rc, err), (1, "codebox: not installed; run codebox install\n"))
+
+    def test_update_refuses_dirty(self):
+        self.run_cb("install")
+        (self.home / "junk").write_text("x")
+        rc, out, err = self.run_cb("update")
+        self.assertEqual(rc, 1)
+        self.assertIn("clean checkout", err)
+
+    def test_update_conflict_leaves_checkout(self):
+        self.run_cb("install")
+        (self.h / ".claude/skills/codebox-new").mkdir()
+        rc, out, err = self.run_cb("update")
+        self.assertEqual(rc, 1)
+        self.assertIn("codebox-new", err)
+        self.assertEqual(codebox.release_of(self.home), "v0.1.0")
 
 
 if __name__ == "__main__":

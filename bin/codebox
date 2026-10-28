@@ -9,6 +9,8 @@ import re
 import shutil
 import subprocess
 import sys
+import tarfile
+import tempfile
 from pathlib import Path
 
 HARNESSES = ("claude", "codex", "opencode")
@@ -172,6 +174,13 @@ def apply(creates: dict, removes: list) -> None:
         print(f"+ {dest} -> {target}")
 
 
+def report_conflicts(conflicts: list) -> int:
+    print("codebox: nothing changed; these paths exist and weren't created by codebox:", file=sys.stderr)
+    for c in conflicts:
+        print(f"  {c}", file=sys.stderr)
+    return 1
+
+
 def install(root: Path, user_home: Path, harness, which=shutil.which) -> int:
     root, user_home = Path(root), Path(user_home)
     rec = read_record(user_home)
@@ -188,10 +197,7 @@ def install(root: Path, user_home: Path, harness, which=shutil.which) -> int:
     desired = desired_links(load_plugins(root), root, chosen, user_home)
     creates, removes, conflicts = plan(desired, rec, user_home)
     if conflicts:
-        print("codebox: nothing changed; these paths exist and weren't created by codebox:", file=sys.stderr)
-        for c in conflicts:
-            print(f"  {c}", file=sys.stderr)
-        return 1
+        return report_conflicts(conflicts)
     release = release_of(root)
     apply(creates, removes)
     wired = {h for d in desired.values() for h in d["harnesses"]}
@@ -227,6 +233,103 @@ def uninstall(user_home: Path) -> int:
     return 0
 
 
+def _git(root: Path, *args) -> subprocess.CompletedProcess:
+    env = {k: v for k, v in os.environ.items() if not k.startswith("GIT_")}
+    return subprocess.run(["git", "-C", str(root), *args], capture_output=True, text=True, env=env)
+
+
+def newest_tag(root: Path):
+    tags = [t for t in _git(root, "tag", "--list").stdout.split() if re.fullmatch(r"v\d+\.\d+\.\d+", t)]
+    return max(tags, key=lambda t: parse_version(t[1:]), default=None)
+
+
+def export_tree(root: Path, rev: str, dest: Path) -> None:
+    env = {k: v for k, v in os.environ.items() if not k.startswith("GIT_")}
+    with subprocess.Popen(["git", "-C", str(root), "archive", rev], stdout=subprocess.PIPE, env=env) as p:
+        with tarfile.open(fileobj=p.stdout, mode="r|") as tar:
+            tar.extractall(dest, **({"filter": "data"} if hasattr(tarfile, "data_filter") else {}))
+        if p.wait():
+            raise ValueError(f"could not export {rev}")
+
+
+def notes_between(changes: dict, old, new: str) -> str:
+    lo = parse_version(old) if old else None
+    return "; ".join(changes[v] for v in sorted(changes, key=parse_version)
+                     if (lo is None or parse_version(v) > lo) and parse_version(v) <= parse_version(new))
+
+
+def _change(name: str, old: dict, new: dict, indent: str) -> str:
+    return f"{indent}{name} {old['version']} \u2192 {new['version']}  {notes_between(new['changes'], old['version'], new['version'])}"
+
+
+def version_diff(old: list, new: list) -> list:
+    olds, news, lines = {p["name"]: p for p in old}, {p["name"]: p for p in new}, []
+    for name in sorted(set(olds) | set(news)):
+        o, n = olds.get(name), news.get(name)
+        if not n:
+            lines.append(f"  - {name} {o['version']}")
+        elif not o:
+            lines.append(f"  + {name} {n['version']}  {notes_between(n['changes'], None, n['version'])}")
+        else:
+            sub = []
+            for s in sorted(set(o["skills"]) | set(n["skills"])):
+                so, sn = o["skills"].get(s), n["skills"].get(s)
+                if not sn:
+                    sub.append(f"    - {s}")
+                elif not so:
+                    sub.append(f"    + {s} {sn['version']}  {notes_between(sn['changes'], None, sn['version'])}")
+                elif so["version"] != sn["version"]:
+                    sub.append(_change(s, so, sn, "    "))
+            if o["version"] != n["version"]:
+                lines.append(_change(name, o, n, "  "))
+            elif sub:
+                lines.append(f"  {name} {n['version']}")
+            lines += sub
+    return lines
+
+
+def update(user_home: Path) -> int:
+    user_home = Path(user_home)
+    rec = read_record(user_home)
+    if not rec:
+        print("codebox: not installed; run codebox install", file=sys.stderr)
+        return 1
+    home = Path(rec["home"])
+    current = release_of(home)
+    if _git(home, "status", "--porcelain").stdout.strip() or not current:
+        print("codebox: update needs HOME to be a clean checkout of a release tag; "
+              "for a development checkout, re-run codebox install", file=sys.stderr)
+        return 1
+    r = _git(home, "fetch", "--tags", "--quiet", "origin")
+    if r.returncode:
+        last = (r.stderr.strip().splitlines() or ["git fetch failed"])[-1]
+        print(f"codebox: could not fetch: {last}", file=sys.stderr)
+        return 1
+    old, new = rec["release"] or current, newest_tag(home)
+    if new == current:
+        print(f"codebox {old} is up to date")
+        return 0
+    old_plugins = load_plugins(home)
+    with tempfile.TemporaryDirectory() as tmp:
+        export_tree(home, new, Path(tmp))
+        new_plugins = load_plugins(Path(tmp))
+    desired = desired_links(new_plugins, home, rec["harnesses"], user_home)
+    conflicts = plan(desired, rec, user_home)[2]
+    if conflicts:
+        return report_conflicts(conflicts)
+    r = _git(home, "checkout", "--quiet", new)
+    if r.returncode:
+        print(f"codebox: could not check out {new}: {(r.stderr.strip().splitlines() or [''])[-1]}", file=sys.stderr)
+        return 1
+    # ponytail: the old release's code wires the new tree; if the manifest format ever changes, re-exec the new bin/codebox instead
+    rc = install(home, user_home, None)
+    if rc:
+        return rc
+    print(f"codebox {old} \u2192 {new}")
+    print("\n".join(version_diff(old_plugins, new_plugins) or ["  (no plugin changes)"]))
+    return 0
+
+
 def main(argv=None, user_home=None, env=None, which=shutil.which) -> int:
     user_home = Path(user_home) if user_home else Path.home()
     env = os.environ if env is None else env
@@ -235,10 +338,13 @@ def main(argv=None, user_home=None, env=None, which=shutil.which) -> int:
     sub.add_parser("install", help="link codebox plugins into your coding agents").add_argument(
         "--harness", choices=HARNESSES, help="wire this harness even if not detected")
     sub.add_parser("uninstall", help="remove codebox's links")
+    sub.add_parser("update", help="move to the newest release and re-link")
     args = ap.parse_args(argv)
     try:
         if args.cmd == "install":
             return install(codebox_home(env, user_home), user_home, args.harness, which)
+        if args.cmd == "update":
+            return update(user_home)
         return uninstall(user_home)
     except ValueError as e:
         print(f"codebox: {e}", file=sys.stderr)
