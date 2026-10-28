@@ -1,0 +1,386 @@
+#!/usr/bin/env python3
+"""codebox: install, update and remove codebox plugins (skills and commands) for coding agents."""
+from __future__ import annotations
+
+import json
+import os
+import argparse
+import re
+import shutil
+import subprocess
+import sys
+import tarfile
+import tempfile
+from pathlib import Path
+
+HARNESSES = ("claude", "codex", "opencode")
+HARNESS_DIRS = {"claude": ".claude", "codex": ".codex", "opencode": ".config/opencode"}
+OLD_DIRS = (".claude/skills", ".agents/skills", ".local/bin", ".claude/commands", ".config/opencode/skills")
+
+
+def parse_version(v: str) -> tuple:
+    if not isinstance(v, str) or not re.fullmatch(r"\d+\.\d+\.\d+", v):
+        raise ValueError(f"bad version {v!r}: expected X.Y.Z")
+    return tuple(int(p) for p in v.split("."))
+
+
+def _check_versions(label: str, version: str, changes: dict) -> None:
+    try:
+        parse_version(version)
+        for k in changes:
+            parse_version(k)
+    except ValueError as e:
+        raise ValueError(f"{label}: {e}")
+    if version not in changes:
+        raise ValueError(f"{label}: version {version} has no changes entry")
+
+
+def _frontmatter_name(skill_md: Path):
+    m = re.match(r"---\n(.*?)\n---", skill_md.read_text(), re.S)
+    n = re.search(r"^name:\s*(\S+)", m.group(1), re.M) if m else None
+    return n.group(1) if n else None
+
+
+def _load_plugin(pdir: Path, root: Path) -> dict:
+    name = pdir.name
+    manifest = json.loads((pdir / "plugin.json").read_text())
+    if manifest.get("name") != name:
+        raise ValueError(f"plugin {name}: manifest name {manifest.get('name')!r} differs from folder")
+    _check_versions(f"plugin {name}", manifest.get("version"), manifest.get("changes", {}))
+    rel = pdir.relative_to(root).as_posix()
+    mskills = manifest.get("skills", {})
+    sroot = pdir / "skills"
+    folders = {d.name for d in sroot.iterdir() if d.is_dir()} if sroot.is_dir() else set()
+    for s in sorted(folders - set(mskills)):
+        raise ValueError(f"plugin {name}: skill folder {s} is not in the manifest")
+    for s in sorted(set(mskills) - folders):
+        raise ValueError(f"plugin {name}: manifest skill {s} has no folder")
+    skills = {}
+    for s, info in sorted(mskills.items()):
+        _check_versions(f"skill {s}", info.get("version"), info.get("changes", {}))
+        if _frontmatter_name(sroot / s / "SKILL.md") != s:
+            raise ValueError(f"skill {s}: SKILL.md name differs from folder")
+        skills[s] = {"version": info["version"], "changes": info["changes"], "dir": f"{rel}/skills/{s}"}
+    bindir = pdir / "bin"
+    commands = {c.name: f"{rel}/bin/{c.name}" for c in sorted(bindir.iterdir()) if c.is_file()} if bindir.is_dir() else {}
+    return {"name": name, "version": manifest["version"], "changes": manifest["changes"],
+            "dir": rel, "skills": skills, "commands": commands}
+
+
+def load_plugins(root: Path) -> list:
+    proot = Path(root) / "plugins"
+    if not proot.is_dir():
+        return []
+    return [_load_plugin(d, Path(root)) for d in sorted(proot.iterdir()) if (d / "plugin.json").is_file()]
+
+
+def detect_harnesses(user_home: Path, which=shutil.which) -> list:
+    return [h for h in HARNESSES if which(h) or (Path(user_home) / HARNESS_DIRS[h]).exists()]
+
+
+def desired_links(plugins: list, root: Path, harnesses: list, user_home: Path) -> dict:
+    root, home = Path(root), Path(user_home)
+    agents = [h for h in ("codex", "opencode") if h in harnesses]
+    links = {}
+    for p in plugins:
+        for s, info in p["skills"].items():
+            target = str(root / info["dir"])
+            if "claude" in harnesses:
+                links[str(home / ".claude/skills" / s)] = {"target": target, "harnesses": ["claude"]}
+            if agents:
+                links[str(home / ".agents/skills" / s)] = {"target": target, "harnesses": list(agents)}
+        for c, rel in p["commands"].items():
+            links[str(home / ".local/bin" / c)] = {"target": str(root / rel), "harnesses": []}
+    links[str(home / ".local/bin/codebox")] = {"target": str(root / "bin/codebox"), "harnesses": []}
+    return links
+
+
+def is_codebox_tree(path: Path) -> bool:
+    p = Path(os.path.realpath(path))
+    while not p.is_dir() and p != p.parent:
+        p = p.parent
+    env = {k: v for k, v in os.environ.items() if not k.startswith("GIT_")}
+    r = subprocess.run(["git", "-C", str(p), "remote", "get-url", "origin"], capture_output=True, text=True, env=env)
+    return r.returncode == 0 and "codebox" in r.stdout
+
+
+def classify(dest: Path, recorded: dict) -> str:
+    dest = Path(dest)
+    if not dest.is_symlink():
+        return "foreign" if dest.exists() else "absent"
+    if recorded.get(str(dest)) == os.readlink(dest):
+        return "ours"
+    if not dest.exists():
+        return "old" if "codebox" in os.readlink(dest) else "foreign"
+    return "old" if is_codebox_tree(dest) else "foreign"
+
+
+def _blocked_by_file(dest: Path) -> bool:
+    nearest = next(a for a in dest.parents if os.path.lexists(a))
+    return not nearest.is_dir()
+
+
+def plan(desired: dict, record, user_home: Path) -> tuple:
+    recorded = {l["path"]: l["target"] for l in record["links"]} if record else {}
+    creates, conflicts = {}, []
+    for dest, d in desired.items():
+        kind = classify(Path(dest), recorded)
+        if _blocked_by_file(Path(dest)):
+            conflicts.append(str(next(a for a in Path(dest).parents if os.path.lexists(a))))
+        elif kind == "foreign" and os.path.islink(dest) and os.readlink(dest) == d["target"]:
+            continue
+        elif kind == "foreign":
+            conflicts.append(dest)
+        elif kind == "absent" or os.readlink(dest) != d["target"]:
+            creates[dest] = d["target"]
+    removes = {p for p in recorded if p not in desired and classify(Path(p), recorded) in ("ours", "old")}
+    for d in OLD_DIRS:
+        folder = Path(user_home) / d
+        for child in sorted(folder.iterdir()) if folder.is_dir() else []:
+            if str(child) not in desired and classify(child, recorded) == "old":
+                removes.add(str(child))
+    return creates, sorted(removes), sorted(conflicts)
+
+
+def record_path(user_home: Path) -> Path:
+    return Path(user_home) / ".local/state/codebox/installed.json"
+
+
+def read_record(user_home: Path):
+    p = record_path(user_home)
+    return json.loads(p.read_text()) if p.is_file() else None
+
+
+def write_record(user_home: Path, rec: dict) -> None:
+    p = record_path(user_home)
+    p.parent.mkdir(parents=True, exist_ok=True)
+    tmp = p.with_name(p.name + ".tmp")
+    tmp.write_text(json.dumps(rec, indent=2) + "\n")
+    os.replace(tmp, p)
+
+
+def codebox_home(env: dict, user_home: Path) -> Path:
+    return Path(env["CODEBOX_HOME"]).expanduser().absolute() if env.get("CODEBOX_HOME") else Path(user_home) / ".codebox"
+
+
+def release_of(root: Path):
+    env = {k: v for k, v in os.environ.items() if not k.startswith("GIT_")}
+    r = subprocess.run(["git", "-C", str(root), "describe", "--tags", "--exact-match"],
+                       capture_output=True, text=True, env=env)
+    tag = r.stdout.strip()
+    return tag if r.returncode == 0 and re.fullmatch(r"v\d+\.\d+\.\d+", tag) else None
+
+
+def apply(creates: dict, removes: list) -> None:
+    for dest in creates:
+        Path(dest).parent.mkdir(parents=True, exist_ok=True)
+    for dest in removes:
+        os.unlink(dest)
+        print(f"- {dest}")
+    for dest, target in sorted(creates.items()):
+        if os.path.islink(dest):
+            os.unlink(dest)
+        os.symlink(target, dest)
+        print(f"+ {dest} -> {target}")
+
+
+def report_conflicts(conflicts: list) -> int:
+    print("codebox: nothing changed; these paths exist and weren't created by codebox:", file=sys.stderr)
+    for c in conflicts:
+        print(f"  {c}", file=sys.stderr)
+    return 1
+
+
+def install(root: Path, user_home: Path, harness, which=shutil.which) -> int:
+    root, user_home = Path(root), Path(user_home)
+    if not (root / "bin/codebox").is_file() or not (root / "plugins").is_dir():
+        print(f"codebox: {root} is not a codebox checkout", file=sys.stderr)
+        return 1
+    rec = read_record(user_home)
+    chosen = set(rec["harnesses"]) if rec else set()
+    chosen |= {harness} if harness else set(detect_harnesses(user_home, which))
+    chosen = [h for h in HARNESSES if h in chosen]
+    if not chosen:
+        print(f"codebox: no supported harness found (looked for {', '.join(HARNESSES)}); use --harness NAME",
+              file=sys.stderr)
+        return 1
+    skipped = [h for h in HARNESSES if h not in chosen]
+    if skipped and not harness:
+        print(f"skipped (not found): {', '.join(skipped)}")
+    desired = desired_links(load_plugins(root), root, chosen, user_home)
+    creates, removes, conflicts = plan(desired, rec, user_home)
+    if conflicts:
+        return report_conflicts(conflicts)
+    release = release_of(root)
+    apply(creates, removes)
+    wired = {h for d in desired.values() for h in d["harnesses"]}
+    wired_list = [h for h in HARNESSES if h in wired]
+    write_record(user_home, {
+        "home": str(root), "release": release, "harnesses": wired_list,
+        "links": [{"path": p, "target": d["target"], "harnesses": d["harnesses"]} for p, d in sorted(desired.items())]})
+    print(f"codebox installed for {', '.join(wired_list)}")
+    bindir = str(user_home / ".local/bin")
+    if bindir not in os.environ.get("PATH", "").split(os.pathsep):
+        print('add to your shell profile: export PATH="$HOME/.local/bin:$PATH"')
+    return 0
+
+
+def uninstall(user_home: Path) -> int:
+    user_home = Path(user_home)
+    rec = read_record(user_home)
+    if not rec:
+        print("codebox: not installed", file=sys.stderr)
+        return 1
+    for l in rec["links"]:
+        p = l["path"]
+        if os.path.islink(p) and os.readlink(p) == l["target"]:
+            os.unlink(p)
+            print(f"- {p}")
+        else:
+            print(f"left {p} (no longer codebox's link)")
+    rc = 0
+    if rec["home"] == str(user_home / ".codebox"):
+        try:
+            shutil.rmtree(rec["home"])
+        except OSError as e:
+            print(f"codebox: could not fully remove {rec['home']}: {e}", file=sys.stderr)
+            rc = 1
+    else:
+        print(f"left {rec['home']} in place")
+    record_path(user_home).unlink()
+    return rc
+
+
+def _git(root: Path, *args) -> subprocess.CompletedProcess:
+    env = {k: v for k, v in os.environ.items() if not k.startswith("GIT_")}
+    return subprocess.run(["git", "-C", str(root), *args], capture_output=True, text=True, env=env)
+
+
+def newest_tag(root: Path):
+    tags = [t for t in _git(root, "tag", "--list").stdout.split() if re.fullmatch(r"v\d+\.\d+\.\d+", t)]
+    return max(tags, key=lambda t: parse_version(t[1:]), default=None)
+
+
+def export_tree(root: Path, rev: str, dest: Path) -> None:
+    env = {k: v for k, v in os.environ.items() if not k.startswith("GIT_")}
+    with subprocess.Popen(["git", "-C", str(root), "archive", rev], stdout=subprocess.PIPE, env=env) as p:
+        with tarfile.open(fileobj=p.stdout, mode="r|") as tar:
+            tar.extractall(dest, **({"filter": "data"} if hasattr(tarfile, "data_filter") else {}))
+        if p.wait():
+            raise ValueError(f"could not export {rev}")
+
+
+def notes_between(changes: dict, old, new: str) -> str:
+    lo = parse_version(old) if old else None
+    return "; ".join(changes[v] for v in sorted(changes, key=parse_version)
+                     if (lo is None or parse_version(v) > lo) and parse_version(v) <= parse_version(new))
+
+
+def _change(name: str, old: dict, new: dict, indent: str) -> str:
+    return f"{indent}{name} {old['version']} \u2192 {new['version']}  {notes_between(new['changes'], old['version'], new['version'])}"
+
+
+def version_diff(old: list, new: list) -> list:
+    olds, news, lines = {p["name"]: p for p in old}, {p["name"]: p for p in new}, []
+    for name in sorted(set(olds) | set(news)):
+        o, n = olds.get(name), news.get(name)
+        if not n:
+            lines.append(f"  - {name} {o['version']}")
+        elif not o:
+            lines.append(f"  + {name} {n['version']}  {notes_between(n['changes'], None, n['version'])}")
+        else:
+            sub = []
+            for s in sorted(set(o["skills"]) | set(n["skills"])):
+                so, sn = o["skills"].get(s), n["skills"].get(s)
+                if not sn:
+                    sub.append(f"    - {s}")
+                elif not so:
+                    sub.append(f"    + {s} {sn['version']}  {notes_between(sn['changes'], None, sn['version'])}")
+                elif so["version"] != sn["version"]:
+                    sub.append(_change(s, so, sn, "    "))
+            if o["version"] != n["version"]:
+                lines.append(_change(name, o, n, "  "))
+            elif sub:
+                lines.append(f"  {name} {n['version']}")
+            lines += sub
+    return lines
+
+
+def update(user_home: Path, which=shutil.which) -> int:
+    user_home = Path(user_home)
+    rec = read_record(user_home)
+    if not rec:
+        print("codebox: not installed; run codebox install", file=sys.stderr)
+        return 1
+    home = Path(rec["home"])
+    current = release_of(home)
+    if _git(home, "status", "--porcelain").stdout.strip() or not current or not _git(home, "symbolic-ref", "-q", "HEAD").returncode:
+        print("codebox: update needs HOME to be a clean checkout of a release tag; "
+              "for a development checkout, re-run codebox install", file=sys.stderr)
+        return 1
+    r = _git(home, "fetch", "--tags", "--quiet", "origin")
+    if r.returncode:
+        last = (r.stderr.strip().splitlines() or ["git fetch failed"])[-1]
+        print(f"codebox: could not fetch: {last}", file=sys.stderr)
+        return 1
+    old, new = rec["release"] or current, newest_tag(home)
+    if new == current:
+        print(f"codebox {old} is up to date")
+        return 0
+    old_plugins = load_plugins(home)
+    with tempfile.TemporaryDirectory() as tmp:
+        export_tree(home, new, Path(tmp))
+        new_plugins = load_plugins(Path(tmp))
+    chosen = set(rec["harnesses"]) | set(detect_harnesses(user_home, which))
+    desired = desired_links(new_plugins, home, [h for h in HARNESSES if h in chosen], user_home)
+    conflicts = plan(desired, rec, user_home)[2]
+    if conflicts:
+        return report_conflicts(conflicts)
+    r = _git(home, "checkout", "--quiet", new)
+    if r.returncode:
+        print(f"codebox: could not check out {new}: {(r.stderr.strip().splitlines() or [''])[-1]}", file=sys.stderr)
+        return 1
+    # ponytail: the old release's code wires the new tree; if the manifest format ever changes, re-exec the new bin/codebox instead
+    try:
+        rc = install(home, user_home, None, which)
+    except BaseException:
+        _git(home, "checkout", "--quiet", current)
+        raise
+    if rc:
+        _git(home, "checkout", "--quiet", current)
+        return rc
+    print(f"codebox {old} \u2192 {new}")
+    print("\n".join(version_diff(old_plugins, new_plugins) or ["  (no plugin changes)"]))
+    return 0
+
+
+def main(argv=None, user_home=None, env=None, which=shutil.which) -> int:
+    user_home = Path(user_home) if user_home else Path.home()
+    env = os.environ if env is None else env
+    ap = argparse.ArgumentParser(prog="codebox", description=__doc__)
+    sub = ap.add_subparsers(dest="cmd", required=True)
+    sub.add_parser("install", help="link codebox plugins into your coding agents").add_argument(
+        "--harness", choices=HARNESSES, help="wire this harness even if not detected")
+    sub.add_parser("uninstall", help="remove codebox's links")
+    sub.add_parser("update", help="move to the newest release and re-link")
+    args = ap.parse_args(argv)
+    try:
+        if args.cmd == "install":
+            return install(codebox_home(env, user_home), user_home, args.harness, which)
+        if args.cmd == "update":
+            return update(user_home, which)
+        return uninstall(user_home)
+    except (ValueError, KeyError) as e:
+        print(f"codebox: {e}", file=sys.stderr)
+    except FileNotFoundError as e:
+        if e.filename in (None, "git"):
+            print("codebox: needs git", file=sys.stderr)
+        else:
+            print(f"codebox: {e}", file=sys.stderr)
+    except OSError as e:
+        print(f"codebox: {e}", file=sys.stderr)
+    return 1
+
+
+if __name__ == "__main__":
+    sys.exit(main())

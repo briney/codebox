@@ -1,11 +1,11 @@
 #!/usr/bin/env bash
-# Live check of bin/board against a scratch repo: tests/e2e.sh OWNER/REPO
+# Live check of plugins/board/bin/board against a scratch repo: tests/e2e.sh OWNER/REPO
 set -euo pipefail
 
 REPO="${1:?usage: e2e.sh OWNER/REPO}"
 [[ "${REPO#*/}" == *scratch* ]] || { echo "refusing: repo name must contain 'scratch'" >&2; exit 2; }
 
-BOARD="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)/bin/board"
+BOARD="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)/plugins/board/bin/board"
 WORK="$(mktemp -d)"
 P="e2e-$(date +%s)"
 NUMS=()

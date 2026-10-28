@@ -4,7 +4,7 @@ import importlib.util
 from importlib.machinery import SourceFileLoader
 from pathlib import Path
 
-_loader = SourceFileLoader("board", str(Path(__file__).resolve().parent.parent / "bin" / "board"))
+_loader = SourceFileLoader("board", str(Path(__file__).resolve().parent.parent / "plugins" / "board" / "bin" / "board"))
 _spec = importlib.util.spec_from_loader("board", _loader)
 board = importlib.util.module_from_spec(_spec)
 _loader.exec_module(board)
@@ -60,6 +60,13 @@ class TestBoard(unittest.TestCase):
             self.assertEqual(board.parse_issue_ref(s), 12)
         with self.assertRaises(ValueError):
             board.parse_issue_ref("abc")
+
+    def test_stale_section(self):
+        cur = board.splice_section("", "new text")
+        self.assertFalse(board.stale_section(cur, "new text"))
+        self.assertTrue(board.stale_section(board.splice_section("", "old text"), "new text"))
+        self.assertFalse(board.stale_section("# no markers\n", "new text"))  # no section: nothing to hint
+        self.assertFalse(board.stale_section(S + "\nx\n", "new text"))      # orphan start: setup reports it
 
     def test_splice_append(self):
         self.assertEqual(board.splice_section("# Repo\n", "rules"), "# Repo\n\n%s\nrules\n%s\n" % (S, E))

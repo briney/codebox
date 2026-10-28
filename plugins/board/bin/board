@@ -14,13 +14,14 @@ from datetime import datetime, timedelta, timezone
 STATUSES = ["Triage", "Planned", "In Progress", "Done"]
 STATUS_COLORS = {"Triage": "GRAY", "Planned": "BLUE", "In Progress": "YELLOW", "Done": "GREEN"}
 STATUS_DESCRIPTIONS = {
-    "Triage": "Captured by `defer`, not yet looked at. The inbox.",
-    "Planned": "Bryan decided it's worth doing. Top-to-bottom order = priority.",
+    "Triage": "Captured by `codebox-defer`, not yet looked at. The inbox.",
+    "Planned": "Decided it's worth doing. Top-to-bottom order = priority.",
     "In Progress": "Work has started (fully or partly).",
     "Done": "Finished.",
 }
 MARK_START = "<!-- codebox:board:start -->"
 MARK_END = "<!-- codebox:board:end -->"
+STALE_HINT = "AGENTS.md board section is out of date; run `board setup` (or the codebox-board-setup skill) to update it"
 
 
 def parse_since(s: str, now: datetime) -> datetime:
@@ -73,6 +74,16 @@ def splice_section(text: str, section: str) -> str:
     if not text:
         return block
     return text + ("" if text.endswith("\n") else "\n") + "\n" + block
+
+
+def section_text() -> str:
+    return (Path(__file__).resolve().parent.parent / "agents-section.md").read_text().rstrip("\n")
+
+
+def stale_section(agents: str, section: str) -> bool:
+    i = agents.find(MARK_START)
+    j = agents.find(MARK_END, i + 1) if i >= 0 else -1
+    return j >= 0 and agents[i + len(MARK_START):j].strip("\n") != section
 
 
 def claude_pointer(text):
@@ -251,13 +262,18 @@ def cmd_setup(args) -> int:
            stdin=json.dumps({"name": "Board", "layout": "board", "vertical_group_by": [b["status_field_db_id"]]}))
         print("created Board view")
     top = git_toplevel()
-    section = (Path(__file__).resolve().parent.parent / "board" / "agents-section.md").read_text().rstrip("\n")
+    section = section_text()
     agents = top / "AGENTS.md"
+    old = agents.read_text() if agents.exists() else ""
     try:
-        spliced = splice_section(agents.read_text() if agents.exists() else "", section)
+        spliced = splice_section(old, section)
     except ValueError:
         die("%s has a board start marker but no end marker; fix the markers and re-run." % agents)
-    _write_if_changed(agents, spliced, "AGENTS.md")
+    if spliced != old and MARK_START in old:
+        agents.write_text(spliced)
+        print("AGENTS.md updated (board section was out of date)")
+    else:
+        _write_if_changed(agents, spliced, "AGENTS.md")
     claude = top / "CLAUDE.md"
     new = claude_pointer(claude.read_text() if claude.exists() else None)
     if new is None:
@@ -587,6 +603,9 @@ def cmd_activity(args) -> int:
             write_stamp(stamp, now)
         except OSError as e:
             die("Could not save %s: %s" % (stamp, e.strerror))
+    agents = git_toplevel() / "AGENTS.md"
+    if agents.exists() and stale_section(agents.read_text(), section_text()):
+        print(STALE_HINT, file=sys.stderr)
     return 0
 
 
