@@ -95,7 +95,8 @@ def is_codebox_tree(path: Path) -> bool:
     p = Path(os.path.realpath(path))
     while not p.is_dir() and p != p.parent:
         p = p.parent
-    r = subprocess.run(["git", "-C", str(p), "remote", "get-url", "origin"], capture_output=True, text=True)
+    env = {k: v for k, v in os.environ.items() if not k.startswith("GIT_")}
+    r = subprocess.run(["git", "-C", str(p), "remote", "get-url", "origin"], capture_output=True, text=True, env=env)
     return r.returncode == 0 and "codebox" in r.stdout
 
 

@@ -2,6 +2,7 @@ import json
 import os
 import tempfile
 import unittest
+from unittest import mock
 from pathlib import Path
 
 from helpers import REPO, codebox, fake_codebox_tree
@@ -135,6 +136,17 @@ class TestClassify(Tmp):
         oth = h / "oth"
         oth.symlink_to(other / "plugins")
         self.assertEqual(c(oth, set()), "foreign")
+
+
+    def test_classify_ignores_git_env(self):
+        h = self.tmp
+        tree = fake_codebox_tree(h / "tree")
+        plain = h / "plain"
+        plain.mkdir()
+        link = h / "link"
+        link.symlink_to(plain)
+        with mock.patch.dict(os.environ, {"GIT_DIR": str(tree / ".git")}):
+            self.assertEqual(codebox.classify(link, set()), "foreign")
 
 
 class TestPlan(Tmp):
