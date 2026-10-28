@@ -9,7 +9,12 @@ trap 'rm -rf "$WORK"' EXIT
 
 # Temp repo, no remote: any `board` call fails harmlessly with "no board".
 mkdir "$WORK/repo" && cd "$WORK/repo" && git init -q
-mkdir -p .claude/skills .agents/skills
+mkdir -p .claude/skills .agents/skills "$WORK/stubs"
+# Stubs so a model calling gh/board can't reach the real account.
+for c in gh board; do
+  printf '#!/bin/sh\necho "disabled in trigger check" >&2\nexit 1\n' >"$WORK/stubs/$c"; chmod +x "$WORK/stubs/$c"
+done
+export PATH="$WORK/stubs:$PATH"
 for s in "$ROOT"/plugins/*/skills/*; do
   ln -s "$s" ".claude/skills/${s##*/}"; ln -s "$s" ".agents/skills/${s##*/}"
 done
@@ -56,8 +61,9 @@ for h in "${harnesses[@]}"; do
   for i in "${!PHRASES[@]}"; do
     out="$WORK/$h-$i.json"
     timeout 300 bash -c "$(declare -f run); run $h \"\$1\"" _ "${PHRASES[$i]}" >"$out" 2>"$out.err" </dev/null
-    if [[ ! -s "$out" ]]; then
-      echo "SKIP $h: ${PHRASES[$i]} (no output: $(head -c 120 "$out.err" | tr '\n' ' '))"; continue
+    st=$?
+    if (( st != 0 )); then
+      echo "SKIP $h: ${PHRASES[$i]} (exit $st: $(head -c 120 "$out.err" | tr '\n' ' '))"; continue
     fi
     if [[ "${SKILLS[$i]}" == none ]]; then any_fired "$h" "$out" && ok=0 || ok=1
     else fired "$h" "${SKILLS[$i]}" "$out" && ok=1 || ok=0; fi
