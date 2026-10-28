@@ -115,12 +115,21 @@ def classify(dest: Path, recorded: dict) -> str:
     return "old" if is_codebox_tree(dest) else "foreign"
 
 
+def _blocked_by_file(dest: Path) -> bool:
+    nearest = next(a for a in dest.parents if os.path.lexists(a))
+    return not nearest.is_dir()
+
+
 def plan(desired: dict, record, user_home: Path) -> tuple:
     recorded = {l["path"]: l["target"] for l in record["links"]} if record else {}
     creates, conflicts = {}, []
     for dest, d in desired.items():
         kind = classify(Path(dest), recorded)
-        if kind == "foreign":
+        if _blocked_by_file(Path(dest)):
+            conflicts.append(str(next(a for a in Path(dest).parents if os.path.lexists(a))))
+        elif kind == "foreign" and os.path.islink(dest) and os.readlink(dest) == d["target"]:
+            continue
+        elif kind == "foreign":
             conflicts.append(dest)
         elif kind == "absent" or os.readlink(dest) != d["target"]:
             creates[dest] = d["target"]
@@ -163,11 +172,12 @@ def release_of(root: Path):
 
 
 def apply(creates: dict, removes: list) -> None:
+    for dest in creates:
+        Path(dest).parent.mkdir(parents=True, exist_ok=True)
     for dest in removes:
         os.unlink(dest)
         print(f"- {dest}")
     for dest, target in sorted(creates.items()):
-        Path(dest).parent.mkdir(parents=True, exist_ok=True)
         if os.path.islink(dest):
             os.unlink(dest)
         os.symlink(target, dest)
@@ -183,6 +193,9 @@ def report_conflicts(conflicts: list) -> int:
 
 def install(root: Path, user_home: Path, harness, which=shutil.which) -> int:
     root, user_home = Path(root), Path(user_home)
+    if not (root / "bin/codebox").is_file() or not (root / "plugins").is_dir():
+        print(f"codebox: {root} is not a codebox checkout", file=sys.stderr)
+        return 1
     rec = read_record(user_home)
     chosen = set(rec["harnesses"]) if rec else set()
     chosen |= {harness} if harness else set(detect_harnesses(user_home, which))
@@ -225,12 +238,17 @@ def uninstall(user_home: Path) -> int:
             print(f"- {p}")
         else:
             print(f"left {p} (no longer codebox's link)")
+    rc = 0
     if rec["home"] == str(user_home / ".codebox"):
-        shutil.rmtree(rec["home"], ignore_errors=True)
+        try:
+            shutil.rmtree(rec["home"])
+        except OSError as e:
+            print(f"codebox: could not fully remove {rec['home']}: {e}", file=sys.stderr)
+            rc = 1
     else:
         print(f"left {rec['home']} in place")
     record_path(user_home).unlink()
-    return 0
+    return rc
 
 
 def _git(root: Path, *args) -> subprocess.CompletedProcess:
@@ -296,7 +314,7 @@ def update(user_home: Path, which=shutil.which) -> int:
         return 1
     home = Path(rec["home"])
     current = release_of(home)
-    if _git(home, "status", "--porcelain").stdout.strip() or not current:
+    if _git(home, "status", "--porcelain").stdout.strip() or not current or not _git(home, "symbolic-ref", "-q", "HEAD").returncode:
         print("codebox: update needs HOME to be a clean checkout of a release tag; "
               "for a development checkout, re-run codebox install", file=sys.stderr)
         return 1
@@ -352,13 +370,15 @@ def main(argv=None, user_home=None, env=None, which=shutil.which) -> int:
         if args.cmd == "update":
             return update(user_home, which)
         return uninstall(user_home)
-    except ValueError as e:
+    except (ValueError, KeyError) as e:
         print(f"codebox: {e}", file=sys.stderr)
     except FileNotFoundError as e:
         if e.filename in (None, "git"):
             print("codebox: needs git", file=sys.stderr)
         else:
             print(f"codebox: {e}", file=sys.stderr)
+    except OSError as e:
+        print(f"codebox: {e}", file=sys.stderr)
     return 1
 
 

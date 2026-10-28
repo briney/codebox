@@ -12,6 +12,11 @@ import subprocess
 from helpers import REPO, codebox, fake_codebox_tree, git, release_repo
 
 
+def _branch(path):
+    return subprocess.run(["git", "-C", str(path), "symbolic-ref", "-q", "--short", "HEAD"],
+                          capture_output=True, text=True).stdout.strip()
+
+
 class Tmp(unittest.TestCase):
     def setUp(self):
         t = tempfile.TemporaryDirectory()
@@ -365,6 +370,54 @@ class TestInstall(Tmp):
         self.assertEqual(board.read_text(), "mine")
         self.assertIn(f"left {board} (no longer codebox's link)", out)
 
+    def test_install_refuses_non_checkout_home(self):
+        self.run_cb("install")
+        before = codebox.record_path(self.h).read_text()
+        links = [l["path"] for l in self.record()["links"]]
+        rc, out, err = self.run_cb("install", env={"CODEBOX_HOME": str(self.tmp / "missing"), "PATH": ""})
+        self.assertEqual(rc, 1)
+        self.assertIn("is not a codebox checkout", err)
+        self.assertTrue(all(os.path.islink(p) and os.path.exists(p) for p in links))
+        self.assertEqual(codebox.record_path(self.h).read_text(), before)
+
+    def test_install_partial_failure_is_conflict_not_traceback(self):
+        self.run_cb("install")
+        before = codebox.record_path(self.h).read_text()
+        (self.h / ".codex").mkdir()
+        (self.h / ".agents").write_text("a file")
+        rc, out, err = self.run_cb("install")
+        self.assertEqual(rc, 1)
+        self.assertIn(str(self.h / ".agents"), err)
+        self.assertNotIn("Traceback", err)
+        self.assertTrue(os.path.islink(self.h / ".claude/skills/codebox-next"))
+        self.assertEqual(codebox.record_path(self.h).read_text(), before)
+
+    def test_corrupt_record_is_one_line_error(self):
+        p = codebox.record_path(self.h)
+        p.parent.mkdir(parents=True)
+        p.write_text('{"home": "x"}')
+        rc, out, err = self.run_cb("uninstall")
+        self.assertEqual(rc, 1)
+        self.assertTrue(err.startswith("codebox: ") and err.count("\n") == 1, err)
+
+    def test_install_accepts_matching_unrecorded_link(self):
+        fork = fake_codebox_tree(self.tmp / "fork", origin="https://example.com/fork.git")
+        link = self.h / ".local/bin/codebox"
+        link.parent.mkdir(parents=True)
+        link.symlink_to(fork / "bin/codebox")
+        rc, out, err = self.run_cb("install", env={"CODEBOX_HOME": str(fork), "PATH": ""})
+        self.assertEqual(rc, 0, err)
+
+    def test_uninstall_reports_failed_home_delete(self):
+        fake_codebox_tree(self.h / ".codebox")
+        env = {"PATH": ""}
+        self.run_cb("install", env=env)
+        with mock.patch.object(codebox.shutil, "rmtree", side_effect=OSError("denied")):
+            rc, out, err = self.run_cb("uninstall", env=env)
+        self.assertEqual(rc, 1)
+        self.assertIn("could not fully remove", err)
+        self.assertFalse(codebox.record_path(self.h).exists())
+
 
 class TestUpdate(Tmp):
     def setUp(self):
@@ -425,6 +478,14 @@ class TestUpdate(Tmp):
         rc, out, err = self.run_cb("update")
         self.assertEqual(rc, 1)
         self.assertIn("clean checkout", err)
+
+    def test_update_refuses_branch_at_release(self):
+        self.run_cb("install")
+        git(self.home, "checkout", "-q", "-b", "dev")
+        rc, out, err = self.run_cb("update")
+        self.assertEqual(rc, 1)
+        self.assertIn("clean checkout", err)
+        self.assertEqual(_branch(self.home), "dev")
 
     def test_update_conflict_leaves_checkout(self):
         self.run_cb("install")

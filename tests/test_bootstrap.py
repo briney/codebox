@@ -50,6 +50,22 @@ class BootstrapTests(unittest.TestCase):
         self.assertEqual(r.returncode, 1)
         self.assertEqual(f.read_text(), "mine")
 
+    def test_refuses_foreign_symlink(self):
+        f = self.home / ".local/bin/codebox"
+        f.parent.mkdir(parents=True)
+        f.symlink_to(self.tmp)
+        r = run(self.home, release_repo(self.tmp))
+        self.assertEqual(r.returncode, 1)
+        self.assertEqual(os.readlink(f), str(self.tmp))
+
+    def test_ignores_prerelease_tags(self):
+        src = release_repo(self.tmp)
+        git(src, "tag", "v0.2.0-rc1")
+        git(src, "tag", "-d", "v0.2.0")
+        r = run(self.home, src)
+        self.assertEqual(r.returncode, 0, r.stderr)
+        self.assertEqual(codebox.release_of(self.home / ".codebox"), "v0.1.0")
+
     def test_truncated_download_does_nothing(self):
         text = (REPO / "bootstrap.sh").read_text()
         env = {"HOME": str(self.home), "CODEBOX_REPO": str(release_repo(self.tmp)), "PATH": os.environ["PATH"]}
