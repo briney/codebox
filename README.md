@@ -25,7 +25,7 @@ Bootstrap clones codebox into `~/.codebox` at the newest release tag and links `
 
 Install and update are all-or-nothing: if a path they would link already exists and codebox didn't create it, they stop and name it. codebox never touches `~/.claude/settings.json`, your global `CLAUDE.md` or `AGENTS.md`, or Codex and OpenCode config.
 
-To work from a development checkout, link from it instead: `CODEBOX_HOME=~/git/codebox codebox install`.
+To work from a development checkout, link from it instead; before any tag exists, the first run is `CODEBOX_HOME=~/git/codebox ~/git/codebox/bin/codebox install`. `codebox install` is safe to re-run.
 
 ## Plugins
 
