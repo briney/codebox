@@ -50,6 +50,13 @@ class BootstrapTests(unittest.TestCase):
         self.assertEqual(r.returncode, 1)
         self.assertEqual(f.read_text(), "mine")
 
+    def test_truncated_download_does_nothing(self):
+        text = (REPO / "bootstrap.sh").read_text()
+        env = {"HOME": str(self.home), "CODEBOX_REPO": str(release_repo(self.tmp)), "PATH": os.environ["PATH"]}
+        r = subprocess.run(["bash"], input=text[: len(text) * 8 // 10], env=env, capture_output=True, text=True)
+        self.assertNotEqual(r.returncode, 0)
+        self.assertFalse((self.home / ".codebox").exists())
+
 
 if __name__ == "__main__":
     unittest.main()
