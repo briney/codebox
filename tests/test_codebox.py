@@ -1,3 +1,5 @@
+import contextlib
+import io
 import json
 import os
 import tempfile
@@ -185,6 +187,144 @@ class TestPlan(Tmp):
         self.assertEqual(creates[str(h / ".claude/skills/new")], "/t/new")
         self.assertNotIn(str(board), creates)
         self.assertEqual(codebox.plan({}, None, h / "empty")[1:], ([], []))
+
+class TestInstall(Tmp):
+    def setUp(self):
+        super().setUp()
+        self.h = self.tmp / "home"
+        (self.h / ".claude").mkdir(parents=True)
+        self.tree = fake_codebox_tree(self.tmp / "tree")
+
+    def run_cb(self, *argv, env=None, which=lambda n: None):
+        env = {"CODEBOX_HOME": str(self.tree), "PATH": ""} if env is None else env
+        out, err = io.StringIO(), io.StringIO()
+        with contextlib.redirect_stdout(out), contextlib.redirect_stderr(err):
+            try:
+                rc = codebox.main(list(argv), user_home=self.h, env=env, which=which)
+            except SystemExit as e:
+                rc = e.code
+        return rc, out.getvalue(), err.getvalue()
+
+    def record(self):
+        return json.loads(codebox.record_path(self.h).read_text())
+
+    def test_install_fresh(self):
+        rc, out, err = self.run_cb("install")
+        self.assertEqual(rc, 0, err)
+        rec = self.record()
+        self.assertEqual(rec["harnesses"], ["claude"])
+        self.assertEqual(rec["home"], str(self.tree))
+        self.assertEqual([l["path"] for l in rec["links"]], sorted(l["path"] for l in rec["links"]))
+        for l in rec["links"]:
+            self.assertEqual(os.readlink(l["path"]), l["target"])
+            self.assertTrue(Path(l["path"]).exists())
+        self.assertIn("codebox installed for claude", out)
+        self.assertIn("skipped (not found): codex, opencode", out)
+        self.assertIn('export PATH="$HOME/.local/bin:$PATH"', out)
+
+    def test_install_idempotent(self):
+        self.run_cb("install")
+        before = codebox.record_path(self.h).read_text()
+        rc, out, err = self.run_cb("install")
+        self.assertEqual(rc, 0, err)
+        self.assertEqual(codebox.record_path(self.h).read_text(), before)
+        self.assertFalse([l for l in out.splitlines() if l.startswith(("+ ", "- "))])
+
+    def test_install_conflict_changes_nothing(self):
+        (self.h / ".local/bin").mkdir(parents=True)
+        board = self.h / ".local/bin/board"
+        board.write_text("mine")
+        rc, out, err = self.run_cb("install")
+        self.assertEqual(rc, 1)
+        self.assertIn(str(board), err)
+        self.assertIn("nothing changed", err)
+        self.assertFalse((self.h / ".claude/skills/codebox-next").exists())
+        self.assertFalse(codebox.record_path(self.h).exists())
+        self.assertEqual(board.read_text(), "mine")
+
+    def test_install_migrates_old_links(self):
+        old = fake_codebox_tree(self.tmp / "old")
+        (self.h / ".claude/skills").mkdir()
+        (self.h / ".local/bin").mkdir(parents=True)
+        defer = self.h / ".claude/skills/defer"
+        defer.symlink_to(old / "plugins/board/skills/codebox-defer")
+        nxt = self.h / ".claude/skills/codebox-next"
+        nxt.symlink_to(old / "plugins/board/skills/codebox-next")
+        board = self.h / ".local/bin/board"
+        board.symlink_to(old / "plugins/board/bin/board")
+        rc, out, err = self.run_cb("install")
+        self.assertEqual(rc, 0, err)
+        self.assertFalse(defer.is_symlink())
+        self.assertEqual(os.readlink(nxt), str(self.tree / "plugins/board/skills/codebox-next"))
+        self.assertEqual(os.readlink(board), str(self.tree / "plugins/board/bin/board"))
+
+    def test_install_harness_flag(self):
+        import shutil
+        shutil.rmtree(self.h / ".claude")
+        rc, out, err = self.run_cb("install", "--harness", "codex")
+        self.assertEqual(rc, 0, err)
+        self.assertTrue((self.h / ".agents/skills/codebox-next").is_symlink())
+        self.assertFalse((self.h / ".claude/skills").exists())
+        self.assertTrue((self.h / ".local/bin/board").is_symlink())
+        self.assertEqual(self.record()["harnesses"], ["codex"])
+        rc, out, err = self.run_cb("install", "--harness", "claude")
+        self.assertEqual(rc, 0, err)
+        self.assertEqual(self.record()["harnesses"], ["claude", "codex"])
+
+    def test_install_none_detected(self):
+        import shutil
+        shutil.rmtree(self.h / ".claude")
+        rc, out, err = self.run_cb("install")
+        self.assertEqual(rc, 1)
+        self.assertIn("no supported harness found", err)
+
+    def test_bad_harness_and_no_command(self):
+        self.assertNotEqual(self.run_cb("install", "--harness", "vim")[0], 0)
+        self.assertNotEqual(self.run_cb()[0], 0)
+
+    def test_bad_manifest_is_one_line_error(self):
+        (self.tree / "plugins/board/skills/stray").mkdir()
+        rc, out, err = self.run_cb("install")
+        self.assertEqual(rc, 1)
+        self.assertTrue(err.startswith("codebox: "))
+        self.assertEqual(len(err.splitlines()), 1)
+
+    def test_missing_git(self):
+        with mock.patch.object(codebox.subprocess, "run", side_effect=FileNotFoundError):
+            rc, out, err = self.run_cb("install")
+        self.assertEqual((rc, err), (1, "codebox: needs git\n"))
+
+    def test_uninstall_not_installed(self):
+        rc, out, err = self.run_cb("uninstall")
+        self.assertEqual((rc, err), (1, "codebox: not installed\n"))
+
+    def test_uninstall_keeps_dev_home(self):
+        self.run_cb("install")
+        links = [l["path"] for l in self.record()["links"]]
+        rc, out, err = self.run_cb("uninstall")
+        self.assertEqual(rc, 0, err)
+        self.assertFalse(any(os.path.lexists(p) for p in links))
+        self.assertFalse(codebox.record_path(self.h).exists())
+        self.assertTrue(self.tree.exists())
+        self.assertIn("left", out)
+
+    def test_uninstall_removes_default_home(self):
+        fake_codebox_tree(self.h / ".codebox")
+        env = {"PATH": ""}
+        self.assertEqual(self.run_cb("install", env=env)[0], 0)
+        rc, out, err = self.run_cb("uninstall", env=env)
+        self.assertEqual(rc, 0, err)
+        self.assertFalse((self.h / ".codebox").exists())
+
+    def test_uninstall_leaves_replaced_link(self):
+        self.run_cb("install")
+        board = self.h / ".local/bin/board"
+        board.unlink()
+        board.write_text("mine")
+        rc, out, err = self.run_cb("uninstall")
+        self.assertEqual(rc, 0, err)
+        self.assertEqual(board.read_text(), "mine")
+        self.assertIn(f"left {board} (no longer codebox's link)", out)
 
 
 if __name__ == "__main__":

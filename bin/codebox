@@ -4,9 +4,11 @@ from __future__ import annotations
 
 import json
 import os
+import argparse
 import re
 import shutil
 import subprocess
+import sys
 from pathlib import Path
 
 HARNESSES = ("claude", "codex", "opencode")
@@ -127,3 +129,125 @@ def plan(desired: dict, record, user_home: Path) -> tuple:
             if str(child) not in desired and classify(child, recorded) == "old":
                 removes.add(str(child))
     return creates, sorted(removes), sorted(conflicts)
+
+
+def record_path(user_home: Path) -> Path:
+    return Path(user_home) / ".local/state/codebox/installed.json"
+
+
+def read_record(user_home: Path):
+    p = record_path(user_home)
+    return json.loads(p.read_text()) if p.is_file() else None
+
+
+def write_record(user_home: Path, rec: dict) -> None:
+    p = record_path(user_home)
+    p.parent.mkdir(parents=True, exist_ok=True)
+    tmp = p.with_name(p.name + ".tmp")
+    tmp.write_text(json.dumps(rec, indent=2) + "\n")
+    os.replace(tmp, p)
+
+
+def codebox_home(env: dict, user_home: Path) -> Path:
+    return Path(env["CODEBOX_HOME"]) if env.get("CODEBOX_HOME") else Path(user_home) / ".codebox"
+
+
+def release_of(root: Path):
+    env = {k: v for k, v in os.environ.items() if not k.startswith("GIT_")}
+    r = subprocess.run(["git", "-C", str(root), "describe", "--tags", "--exact-match"],
+                       capture_output=True, text=True, env=env)
+    tag = r.stdout.strip()
+    return tag if r.returncode == 0 and re.fullmatch(r"v\d+\.\d+\.\d+", tag) else None
+
+
+def apply(creates: dict, removes: list) -> None:
+    for dest in removes:
+        os.unlink(dest)
+        print(f"- {dest}")
+    for dest, target in sorted(creates.items()):
+        Path(dest).parent.mkdir(parents=True, exist_ok=True)
+        if os.path.islink(dest):
+            os.unlink(dest)
+        os.symlink(target, dest)
+        print(f"+ {dest} -> {target}")
+
+
+def install(root: Path, user_home: Path, harness, which=shutil.which) -> int:
+    root, user_home = Path(root), Path(user_home)
+    rec = read_record(user_home)
+    chosen = set(rec["harnesses"]) if rec else set()
+    chosen |= {harness} if harness else set(detect_harnesses(user_home, which))
+    chosen = [h for h in HARNESSES if h in chosen]
+    if not chosen:
+        print(f"codebox: no supported harness found (looked for {', '.join(HARNESSES)}); use --harness NAME",
+              file=sys.stderr)
+        return 1
+    skipped = [h for h in HARNESSES if h not in chosen]
+    if skipped and not harness:
+        print(f"skipped (not found): {', '.join(skipped)}")
+    desired = desired_links(load_plugins(root), root, chosen, user_home)
+    creates, removes, conflicts = plan(desired, rec, user_home)
+    if conflicts:
+        print("codebox: nothing changed; these paths exist and weren't created by codebox:", file=sys.stderr)
+        for c in conflicts:
+            print(f"  {c}", file=sys.stderr)
+        return 1
+    apply(creates, removes)
+    wired = {h for d in desired.values() for h in d["harnesses"]}
+    wired_list = [h for h in HARNESSES if h in wired]
+    write_record(user_home, {
+        "home": str(root), "release": release_of(root), "harnesses": wired_list,
+        "links": [{"path": p, "target": d["target"], "harnesses": d["harnesses"]} for p, d in sorted(desired.items())]})
+    print(f"codebox installed for {', '.join(wired_list)}")
+    bindir = str(user_home / ".local/bin")
+    if bindir not in os.environ.get("PATH", "").split(os.pathsep):
+        print('add to your shell profile: export PATH="$HOME/.local/bin:$PATH"')
+    return 0
+
+
+def uninstall(user_home: Path) -> int:
+    user_home = Path(user_home)
+    rec = read_record(user_home)
+    if not rec:
+        print("codebox: not installed", file=sys.stderr)
+        return 1
+    for l in rec["links"]:
+        p = l["path"]
+        if os.path.islink(p) and os.readlink(p) == l["target"]:
+            os.unlink(p)
+            print(f"- {p}")
+        else:
+            print(f"left {p} (no longer codebox's link)")
+    if rec["home"] == str(user_home / ".codebox"):
+        shutil.rmtree(rec["home"], ignore_errors=True)
+    else:
+        print(f"left {rec['home']} in place")
+    record_path(user_home).unlink()
+    return 0
+
+
+def main(argv=None, user_home=None, env=None, which=shutil.which) -> int:
+    user_home = Path(user_home) if user_home else Path.home()
+    env = os.environ if env is None else env
+    ap = argparse.ArgumentParser(prog="codebox", description=__doc__)
+    sub = ap.add_subparsers(dest="cmd", required=True)
+    sub.add_parser("install", help="link codebox plugins into your coding agents").add_argument(
+        "--harness", choices=HARNESSES, help="wire this harness even if not detected")
+    sub.add_parser("uninstall", help="remove codebox's links")
+    args = ap.parse_args(argv)
+    try:
+        if args.cmd == "install":
+            return install(codebox_home(env, user_home), user_home, args.harness, which)
+        return uninstall(user_home)
+    except ValueError as e:
+        print(f"codebox: {e}", file=sys.stderr)
+    except FileNotFoundError as e:
+        if e.filename in (None, "git"):
+            print("codebox: needs git", file=sys.stderr)
+        else:
+            print(f"codebox: {e}", file=sys.stderr)
+    return 1
+
+
+if __name__ == "__main__":
+    sys.exit(main())
