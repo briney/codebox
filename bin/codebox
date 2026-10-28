@@ -1,0 +1,128 @@
+#!/usr/bin/env python3
+"""codebox: install, update and remove codebox plugins (skills and commands) for coding agents."""
+from __future__ import annotations
+
+import json
+import os
+import re
+import shutil
+import subprocess
+from pathlib import Path
+
+HARNESSES = ("claude", "codex", "opencode")
+HARNESS_DIRS = {"claude": ".claude", "codex": ".codex", "opencode": ".config/opencode"}
+OLD_DIRS = (".claude/skills", ".agents/skills", ".local/bin", ".claude/commands", ".config/opencode/skills")
+
+
+def parse_version(v: str) -> tuple:
+    if not isinstance(v, str) or not re.fullmatch(r"\d+\.\d+\.\d+", v):
+        raise ValueError(f"bad version {v!r}: expected X.Y.Z")
+    return tuple(int(p) for p in v.split("."))
+
+
+def _check_versions(label: str, version: str, changes: dict) -> None:
+    try:
+        parse_version(version)
+        for k in changes:
+            parse_version(k)
+    except ValueError as e:
+        raise ValueError(f"{label}: {e}")
+    if version not in changes:
+        raise ValueError(f"{label}: version {version} has no changes entry")
+
+
+def _frontmatter_name(skill_md: Path):
+    m = re.match(r"---\n(.*?)\n---", skill_md.read_text(), re.S)
+    n = re.search(r"^name:\s*(\S+)", m.group(1), re.M) if m else None
+    return n.group(1) if n else None
+
+
+def _load_plugin(pdir: Path, root: Path) -> dict:
+    name = pdir.name
+    manifest = json.loads((pdir / "plugin.json").read_text())
+    if manifest.get("name") != name:
+        raise ValueError(f"plugin {name}: manifest name {manifest.get('name')!r} differs from folder")
+    _check_versions(f"plugin {name}", manifest.get("version"), manifest.get("changes", {}))
+    rel = pdir.relative_to(root).as_posix()
+    mskills = manifest.get("skills", {})
+    sroot = pdir / "skills"
+    folders = {d.name for d in sroot.iterdir() if d.is_dir()} if sroot.is_dir() else set()
+    for s in sorted(folders - set(mskills)):
+        raise ValueError(f"plugin {name}: skill folder {s} is not in the manifest")
+    for s in sorted(set(mskills) - folders):
+        raise ValueError(f"plugin {name}: manifest skill {s} has no folder")
+    skills = {}
+    for s, info in sorted(mskills.items()):
+        _check_versions(f"skill {s}", info.get("version"), info.get("changes", {}))
+        if _frontmatter_name(sroot / s / "SKILL.md") != s:
+            raise ValueError(f"skill {s}: SKILL.md name differs from folder")
+        skills[s] = {"version": info["version"], "changes": info["changes"], "dir": f"{rel}/skills/{s}"}
+    bindir = pdir / "bin"
+    commands = {c.name: f"{rel}/bin/{c.name}" for c in sorted(bindir.iterdir()) if c.is_file()} if bindir.is_dir() else {}
+    return {"name": name, "version": manifest["version"], "changes": manifest["changes"],
+            "dir": rel, "skills": skills, "commands": commands}
+
+
+def load_plugins(root: Path) -> list:
+    proot = Path(root) / "plugins"
+    if not proot.is_dir():
+        return []
+    return [_load_plugin(d, Path(root)) for d in sorted(proot.iterdir()) if (d / "plugin.json").is_file()]
+
+
+def detect_harnesses(user_home: Path, which=shutil.which) -> list:
+    return [h for h in HARNESSES if which(h) or (Path(user_home) / HARNESS_DIRS[h]).exists()]
+
+
+def desired_links(plugins: list, root: Path, harnesses: list, user_home: Path) -> dict:
+    root, home = Path(root), Path(user_home)
+    agents = [h for h in ("codex", "opencode") if h in harnesses]
+    links = {}
+    for p in plugins:
+        for s, info in p["skills"].items():
+            target = str(root / info["dir"])
+            if "claude" in harnesses:
+                links[str(home / ".claude/skills" / s)] = {"target": target, "harnesses": ["claude"]}
+            if agents:
+                links[str(home / ".agents/skills" / s)] = {"target": target, "harnesses": list(agents)}
+        for c, rel in p["commands"].items():
+            links[str(home / ".local/bin" / c)] = {"target": str(root / rel), "harnesses": []}
+    links[str(home / ".local/bin/codebox")] = {"target": str(root / "bin/codebox"), "harnesses": []}
+    return links
+
+
+def is_codebox_tree(path: Path) -> bool:
+    p = Path(os.path.realpath(path))
+    while not p.is_dir() and p != p.parent:
+        p = p.parent
+    r = subprocess.run(["git", "-C", str(p), "remote", "get-url", "origin"], capture_output=True, text=True)
+    return r.returncode == 0 and "codebox" in r.stdout
+
+
+def classify(dest: Path, recorded: set) -> str:
+    dest = Path(dest)
+    if not dest.is_symlink():
+        return "foreign" if dest.exists() else "absent"
+    if str(dest) in recorded:
+        return "ours"
+    if not dest.exists():
+        return "old" if "codebox" in os.readlink(dest) else "foreign"
+    return "old" if is_codebox_tree(dest) else "foreign"
+
+
+def plan(desired: dict, record, user_home: Path) -> tuple:
+    recorded = {l["path"] for l in record["links"]} if record else set()
+    creates, conflicts = {}, []
+    for dest, d in desired.items():
+        kind = classify(Path(dest), recorded)
+        if kind == "foreign":
+            conflicts.append(dest)
+        elif kind == "absent" or os.readlink(dest) != d["target"]:
+            creates[dest] = d["target"]
+    removes = {p for p in recorded if p not in desired and Path(p).is_symlink()}
+    for d in OLD_DIRS:
+        folder = Path(user_home) / d
+        for child in sorted(folder.iterdir()) if folder.is_dir() else []:
+            if str(child) not in desired and classify(child, recorded) == "old":
+                removes.add(str(child))
+    return creates, sorted(removes), sorted(conflicts)
