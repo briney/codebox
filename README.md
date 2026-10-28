@@ -1,6 +1,6 @@
 # codebox
 
-Bryan's harness-neutral agent toolkit: skills and small tools that work the same in Claude Code, Codex and OpenCode. The repo board is its first feature.
+A harness-neutral agent toolkit: skills and small tools that work the same in Claude Code, Codex and OpenCode. The repo board is its first feature.
 
 Each repo gets one GitHub Projects board with statuses Triage → Planned → In Progress → Done. Order within Planned is priority. A dropped card is an issue closed as not planned; a blocked card has a native issue dependency. The upkeep rules live in each repo's `AGENTS.md`, written by `board-setup`.
 
@@ -12,22 +12,36 @@ Each repo gets one GitHub Projects board with statuses Triage → Planned → In
 ## Install
 
 ```sh
-git clone https://github.com/briney/codebox.git ~/codebox && ~/codebox/install.sh
+curl -fsSL https://raw.githubusercontent.com/briney/codebox/main/bootstrap.sh | bash
+codebox install                    # or: codebox install --harness claude|codex|opencode
 ```
 
-This links the skills into `~/.claude/skills` and `~/.agents/skills` and `board` into `~/.local/bin`. It is safe to re-run, and it removes dangling links left by the old codebox install.
+Bootstrap clones codebox into `~/.codebox` at the newest release tag and links `codebox` into `~/.local/bin`. Re-running it only fetches; it doesn't move the checkout, and tells you to run `codebox update`.
 
-## What's in it
+`codebox install` links skills into `~/.claude/skills` (Claude Code) and `~/.agents/skills` (Codex, OpenCode), and plugin commands into `~/.local/bin`.
 
-Skills, in `skills/`:
+- `codebox update` moves to the newest release, re-links, and prints each plugin and skill version change with its notes. It refuses if `~/.codebox` isn't a clean release-tag checkout.
+- `codebox uninstall` removes only the links it recorded in `~/.local/state/codebox/installed.json`, and deletes `~/.codebox` (never a `CODEBOX_HOME` checkout).
 
-- `defer`: park an idea as a card on the current repo's board.
-- `next`: bring the board up to date and show it.
-- `board-setup`: create the repo's board and write the upkeep rules into `AGENTS.md`.
+Install and update are all-or-nothing: if a path they would link already exists and codebox didn't create it, they stop and name it. codebox never touches `~/.claude/settings.json`, your global `CLAUDE.md` or `AGENTS.md`, or Codex and OpenCode config.
 
-Invoke them with `/defer` in Claude Code and OpenCode, or `$defer` in Codex (same for `next` and `board-setup`). They also trigger from plain language, such as "defer this" or "what's next?". OpenCode reads both `~/.claude/skills` and `~/.agents/skills` and dedupes by name, so the double install is harmless.
+To work from a development checkout, link from it instead: `CODEBOX_HOME=~/git/codebox codebox install`.
 
-The `board` command (`bin/board`) works on the repo in the current directory:
+## Plugins
+
+### board
+
+Skills:
+
+- `codebox-defer`: park an idea as a card on the current repo's board ("park this for later").
+- `codebox-next`: bring the board up to date and show it ("what's next?").
+- `codebox-board-setup`: create the repo's board and write the upkeep rules into `AGENTS.md` ("set up the board here").
+
+Say it in plain language, or use `/codebox-next` in Claude Code and OpenCode, `$codebox-next` in Codex (same for the others). OpenCode reads both `~/.claude/skills` and `~/.agents/skills` and dedupes by name, so the double install is harmless.
+
+For a repo that already has a board, run `board setup` there to refresh its `AGENTS.md` section; `board activity` hints when it's stale.
+
+The `board` command (`plugins/board/bin/board`) works on the repo in the current directory:
 
 - `board find`, `board setup`: show the linked board; create or verify it.
 - `board add --title T [--body B]`, `board add N`: create a card, or board an existing issue.
@@ -39,9 +53,14 @@ The `board` command (`bin/board`) works on the repo in the current directory:
 
 Text flags take `-` to read stdin, e.g. `board add --title T --body - <<'EOT'`. Stdin is never read implicitly.
 
+## Releasing
+
+Bump the version and add a one-line note in `plugins/<name>/plugin.json` for each changed plugin and skill, run the tests (`tests/test_versions.py` fails on a changed plugin or skill without a bump), then tag `vX.Y.Z` and push the tag.
+
 ## Tests
 
 ```sh
 python3 -m unittest discover -s tests
 tests/e2e.sh OWNER/REPO   # live check against a scratch repo; the name must contain "scratch"
+tests/triggers.sh [harness...]   # on demand: checks skills trigger from plain language; costs model calls
 ```

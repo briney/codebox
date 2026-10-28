@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# Live check of bin/board against a scratch repo: tests/e2e.sh OWNER/REPO
+# Live check of plugins/board/bin/board against a scratch repo: tests/e2e.sh OWNER/REPO
 set -euo pipefail
 
 REPO="${1:?usage: e2e.sh OWNER/REPO}"
