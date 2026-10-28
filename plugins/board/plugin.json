@@ -1,0 +1,12 @@
+{
+  "name": "board",
+  "version": "1.0.0",
+  "changes": {
+    "1.0.0": "first versioned release; skills renamed codebox-*; in repos that already have a board, run `board setup` to refresh the AGENTS.md section"
+  },
+  "skills": {
+    "codebox-defer": {"version": "1.0.0", "changes": {"1.0.0": "renamed from defer"}},
+    "codebox-next": {"version": "1.0.0", "changes": {"1.0.0": "renamed from next"}},
+    "codebox-board-setup": {"version": "1.0.0", "changes": {"1.0.0": "renamed from board-setup"}}
+  }
+}

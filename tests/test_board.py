@@ -4,7 +4,7 @@ import importlib.util
 from importlib.machinery import SourceFileLoader
 from pathlib import Path
 
-_loader = SourceFileLoader("board", str(Path(__file__).resolve().parent.parent / "bin" / "board"))
+_loader = SourceFileLoader("board", str(Path(__file__).resolve().parent.parent / "plugins" / "board" / "bin" / "board"))
 _spec = importlib.util.spec_from_loader("board", _loader)
 board = importlib.util.module_from_spec(_spec)
 _loader.exec_module(board)
