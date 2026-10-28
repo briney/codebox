@@ -14,7 +14,7 @@ main() {
   if [ ! -e "$HOME_DIR" ]; then
     next="codebox install"
     git clone --quiet "$REPO_URL" "$HOME_DIR"
-    tag=$(git -C "$HOME_DIR" tag --list 'v[0-9]*' --sort=-v:refname | head -1)
+    tag=$(git -C "$HOME_DIR" tag --list --sort=-v:refname | grep -E '^v[0-9]+\.[0-9]+\.[0-9]+$' | sed -n 1p || true)
     if [ -z "$tag" ]; then
       rm -rf "$HOME_DIR"
       die "$REPO_URL has no release tags yet"
@@ -29,6 +29,9 @@ main() {
   mkdir -p "$HOME/.local/bin"
   if [ -e "$LINK" ] && [ ! -L "$LINK" ]; then
     die "~/.local/bin/codebox exists and isn't a link; move it and re-run"
+  fi
+  if [ -L "$LINK" ] && [ -e "$LINK" ] && [ "$(readlink "$LINK")" != "$HOME_DIR/bin/codebox" ]; then
+    die "~/.local/bin/codebox is a link to somewhere else; move it and re-run"
   fi
   ln -sfn "$HOME_DIR/bin/codebox" "$LINK"
 
