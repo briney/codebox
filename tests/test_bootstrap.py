@@ -7,8 +7,8 @@ from pathlib import Path
 from helpers import REPO, codebox, fake_codebox_tree, git, release_repo
 
 
-def run(home, src):
-    env = {"HOME": str(home), "CODEBOX_REPO": str(src), "PATH": os.environ["PATH"]}
+def run(home, src, path=os.environ["PATH"]):
+    env = {"HOME": str(home), "CODEBOX_REPO": str(src), "PATH": path}
     return subprocess.run(["bash", str(REPO / "bootstrap.sh")], env=env, capture_output=True, text=True)
 
 
@@ -49,6 +49,7 @@ class BootstrapTests(unittest.TestCase):
         r = run(self.home, release_repo(self.tmp))
         self.assertEqual(r.returncode, 1)
         self.assertEqual(f.read_text(), "mine")
+        self.assertFalse((self.home / ".codebox").exists())
 
     def test_refuses_foreign_symlink(self):
         f = self.home / ".local/bin/codebox"
@@ -57,6 +58,24 @@ class BootstrapTests(unittest.TestCase):
         r = run(self.home, release_repo(self.tmp))
         self.assertEqual(r.returncode, 1)
         self.assertEqual(os.readlink(f), str(self.tmp))
+        self.assertFalse((self.home / ".codebox").exists())
+
+    def test_refuses_non_checkout_home(self):
+        d = self.home / ".codebox"
+        d.mkdir()
+        (d / "notes").write_text("mine")
+        r = run(self.home, release_repo(self.tmp))
+        self.assertEqual(r.returncode, 1)
+        self.assertIn("is not a codebox checkout", r.stderr)
+        self.assertEqual(os.listdir(d), ["notes"])
+        self.assertFalse(os.path.lexists(self.home / ".local/bin/codebox"))
+
+    def test_path_hint(self):
+        src = release_repo(self.tmp)
+        hint = 'export PATH="$HOME/.local/bin:$PATH"'
+        self.assertIn(hint, run(self.home, src).stdout)
+        r = run(self.home, src, f"{self.home}/.local/bin:{os.environ['PATH']}")
+        self.assertNotIn(hint, r.stdout)
 
     def test_ignores_prerelease_tags(self):
         src = release_repo(self.tmp)

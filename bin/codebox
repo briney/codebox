@@ -43,7 +43,10 @@ def _frontmatter_name(skill_md: Path):
 
 def _load_plugin(pdir: Path, root: Path) -> dict:
     name = pdir.name
-    manifest = json.loads((pdir / "plugin.json").read_text())
+    try:
+        manifest = json.loads((pdir / "plugin.json").read_text())
+    except ValueError as e:
+        raise ValueError(f"plugin {name}: plugin.json: {e}")
     if manifest.get("name") != name:
         raise ValueError(f"plugin {name}: manifest name {manifest.get('name')!r} differs from folder")
     _check_versions(f"plugin {name}", manifest.get("version"), manifest.get("changes", {}))
@@ -58,6 +61,8 @@ def _load_plugin(pdir: Path, root: Path) -> dict:
     skills = {}
     for s, info in sorted(mskills.items()):
         _check_versions(f"skill {s}", info.get("version"), info.get("changes", {}))
+        if not (sroot / s / "SKILL.md").is_file():
+            raise ValueError(f"plugin {name}: skill {s} has no SKILL.md")
         if _frontmatter_name(sroot / s / "SKILL.md") != s:
             raise ValueError(f"skill {s}: SKILL.md name differs from folder")
         skills[s] = {"version": info["version"], "changes": info["changes"], "dir": f"{rel}/skills/{s}"}
@@ -139,7 +144,7 @@ def plan(desired: dict, record, user_home: Path) -> tuple:
         for child in sorted(folder.iterdir()) if folder.is_dir() else []:
             if str(child) not in desired and classify(child, recorded) == "old":
                 removes.add(str(child))
-    return creates, sorted(removes), sorted(conflicts)
+    return creates, sorted(removes), sorted(set(conflicts))
 
 
 def record_path(user_home: Path) -> Path:
@@ -191,7 +196,7 @@ def report_conflicts(conflicts: list) -> int:
     return 1
 
 
-def install(root: Path, user_home: Path, harness, which=shutil.which) -> int:
+def install(root: Path, user_home: Path, harness, which=shutil.which, env=os.environ) -> int:
     root, user_home = Path(root), Path(user_home)
     if not (root / "bin/codebox").is_file() or not (root / "plugins").is_dir():
         print(f"codebox: {root} is not a codebox checkout", file=sys.stderr)
@@ -220,7 +225,7 @@ def install(root: Path, user_home: Path, harness, which=shutil.which) -> int:
         "links": [{"path": p, "target": d["target"], "harnesses": d["harnesses"]} for p, d in sorted(desired.items())]})
     print(f"codebox installed for {', '.join(wired_list)}")
     bindir = str(user_home / ".local/bin")
-    if bindir not in os.environ.get("PATH", "").split(os.pathsep):
+    if bindir not in env.get("PATH", "").split(os.pathsep):
         print('add to your shell profile: export PATH="$HOME/.local/bin:$PATH"')
     return 0
 
@@ -242,6 +247,8 @@ def uninstall(user_home: Path) -> int:
     if rec["home"] == str(user_home / ".codebox"):
         try:
             shutil.rmtree(rec["home"])
+        except FileNotFoundError:
+            pass
         except OSError as e:
             print(f"codebox: could not fully remove {rec['home']}: {e}", file=sys.stderr)
             rc = 1
@@ -306,7 +313,7 @@ def version_diff(old: list, new: list) -> list:
     return lines
 
 
-def update(user_home: Path, which=shutil.which) -> int:
+def update(user_home: Path, which=shutil.which, env=os.environ) -> int:
     user_home = Path(user_home)
     rec = read_record(user_home)
     if not rec:
@@ -342,7 +349,7 @@ def update(user_home: Path, which=shutil.which) -> int:
         return 1
     # ponytail: the old release's code wires the new tree; if the manifest format ever changes, re-exec the new bin/codebox instead
     try:
-        rc = install(home, user_home, None, which)
+        rc = install(home, user_home, None, which, env)
     except BaseException:
         _git(home, "checkout", "--quiet", current)
         raise
@@ -366,9 +373,9 @@ def main(argv=None, user_home=None, env=None, which=shutil.which) -> int:
     args = ap.parse_args(argv)
     try:
         if args.cmd == "install":
-            return install(codebox_home(env, user_home), user_home, args.harness, which)
+            return install(codebox_home(env, user_home), user_home, args.harness, which, env)
         if args.cmd == "update":
-            return update(user_home, which)
+            return update(user_home, which, env)
         return uninstall(user_home)
     except (ValueError, KeyError) as e:
         print(f"codebox: {e}", file=sys.stderr)

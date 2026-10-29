@@ -10,6 +10,12 @@ die() { echo "codebox bootstrap: $*" >&2; exit 1; }
 
 main() {
   command -v git >/dev/null && command -v python3 >/dev/null || die "needs git and python3"
+  if [ -e "$LINK" ] && [ ! -L "$LINK" ]; then
+    die "~/.local/bin/codebox exists and isn't a link; move it and re-run"
+  fi
+  if [ -L "$LINK" ] && [ -e "$LINK" ] && [ "$(readlink "$LINK")" != "$HOME_DIR/bin/codebox" ]; then
+    die "~/.local/bin/codebox is a link to somewhere else; move it and re-run"
+  fi
 
   if [ ! -e "$HOME_DIR" ]; then
     next="codebox install"
@@ -27,12 +33,6 @@ main() {
   fi
 
   mkdir -p "$HOME/.local/bin"
-  if [ -e "$LINK" ] && [ ! -L "$LINK" ]; then
-    die "~/.local/bin/codebox exists and isn't a link; move it and re-run"
-  fi
-  if [ -L "$LINK" ] && [ -e "$LINK" ] && [ "$(readlink "$LINK")" != "$HOME_DIR/bin/codebox" ]; then
-    die "~/.local/bin/codebox is a link to somewhere else; move it and re-run"
-  fi
   ln -sfn "$HOME_DIR/bin/codebox" "$LINK"
 
   case ":$PATH:" in

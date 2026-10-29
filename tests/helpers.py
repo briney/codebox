@@ -34,9 +34,12 @@ def release_repo(tmp):
     """A codebox tree tagged v0.1.0, then v0.2.0 (board bumped, plugin newplugin added); left at v0.2.0."""
     import json
     root = fake_codebox_tree(Path(tmp) / "release")
-    git(root, "tag", "v0.1.0")
     board = root / "plugins/board/plugin.json"
     m = json.loads(board.read_text())
+    m["version"], m["changes"] = "1.0.0", {"1.0.0": m["changes"]["1.0.0"]}  # stable baseline across real bumps
+    board.write_text(json.dumps(m, indent=2) + "\n")
+    git(root, "commit", "-q", "--allow-empty", "-am", "v0.1.0")
+    git(root, "tag", "v0.1.0")
     m["version"] = "1.1.0"
     m["changes"]["1.1.0"] = "next: shows blocked cards last"
     m["skills"]["codebox-next"]["version"] = "1.1.0"

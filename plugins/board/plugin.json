@@ -1,7 +1,8 @@
 {
   "name": "board",
-  "version": "1.0.0",
+  "version": "1.0.1",
   "changes": {
+    "1.0.1": "setup: one-line error for an unreadable AGENTS.md or CLAUDE.md instead of a traceback",
     "1.0.0": "first versioned release; skills renamed codebox-*; in repos that already have a board, run `board setup` to refresh the AGENTS.md section"
   },
   "skills": {

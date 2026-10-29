@@ -83,6 +83,19 @@ class TestGuard(unittest.TestCase):
         f.write_text(json.dumps(m))
         self.assertEqual(len(version_violations(root, "v0.2.0")), 1)
 
+    def test_added_or_removed_file_is_change(self):
+        with tempfile.TemporaryDirectory() as t:
+            root = release_repo(t)
+            (root / "plugins/board/skills/codebox-defer/extra.md").write_text("x")
+            v = "\n".join(version_violations(root, "v0.2.0"))
+            self.assertIn("codebox-defer: files changed", v)
+            self.assertIn("board: files changed", v)
+        with tempfile.TemporaryDirectory() as t:
+            root = release_repo(t)
+            (root / "plugins/board/agents-section.md").unlink()
+            self.assertEqual(version_violations(root, "v0.2.0"),
+                             ["board: files changed since v0.2.0 but version is still 1.1.0"])
+
 
 if __name__ == "__main__":
     unittest.main()
