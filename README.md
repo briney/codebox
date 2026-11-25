@@ -1,6 +1,6 @@
 # codebox
 
-A harness-neutral agent toolkit: skills and small tools that work the same in Claude Code, Codex and OpenCode. The repo board is its first feature.
+A harness-neutral agent toolkit: skills and small tools that work the same in Claude Code, Codex, OpenCode, and Antigravity. The repo board is its first feature.
 
 Each repo gets one GitHub Projects board with statuses Triage → Planned → In Progress → Done. Order within Planned is priority. A dropped card is an issue closed as not planned; a blocked card has a native issue dependency. The upkeep rules live in each repo's `AGENTS.md`, written by `board-setup`.
 
@@ -13,17 +13,17 @@ Each repo gets one GitHub Projects board with statuses Triage → Planned → In
 
 ```sh
 curl -fsSL https://raw.githubusercontent.com/briney/codebox/main/bootstrap.sh | bash
-codebox install                    # or: codebox install --harness claude|codex|opencode
+codebox install                    # or: codebox install --harness claude|codex|opencode|antigravity
 ```
 
 Bootstrap clones codebox into `~/.codebox` at the newest release tag and links `codebox` into `~/.local/bin`. Re-running it only fetches; it doesn't move the checkout, and tells you to run `codebox update`.
 
-`codebox install` links skills into `~/.claude/skills` (Claude Code) and `~/.agents/skills` (Codex, OpenCode), and plugin commands into `~/.local/bin`.
+`codebox install` links skills into `~/.claude/skills` (Claude Code), `~/.agents/skills` (Codex, OpenCode), and `~/.gemini/config/skills` (Antigravity), and plugin commands into `~/.local/bin`.
 
 - `codebox update` moves to the newest release, re-links, and prints each plugin and skill version change with its notes. It refuses if `~/.codebox` isn't a clean release-tag checkout.
 - `codebox uninstall` removes only the links it recorded in `~/.local/state/codebox/installed.json`, and deletes `~/.codebox` (never a `CODEBOX_HOME` checkout).
 
-Install and update are all-or-nothing: if a path they would link already exists and codebox didn't create it, they stop and name it. codebox never touches `~/.claude/settings.json`, your global `CLAUDE.md` or `AGENTS.md`, or Codex and OpenCode config.
+Install and update are all-or-nothing: if a path they would link already exists and codebox didn't create it, they stop and name it. codebox never touches `~/.claude/settings.json`, your global `CLAUDE.md` or `AGENTS.md`, or Codex, OpenCode, and Antigravity config.
 
 To work from a development checkout, link from it instead; before any tag exists, the first run is `CODEBOX_HOME=~/git/codebox ~/git/codebox/bin/codebox install`. `codebox install` is safe to re-run.
 
@@ -37,7 +37,7 @@ Skills:
 - `codebox-next`: bring the board up to date and show it ("what's next?").
 - `codebox-board-setup`: create the repo's board and write the upkeep rules into `AGENTS.md` ("set up the board here").
 
-Say it in plain language, or use `/codebox-next` in Claude Code and OpenCode, `$codebox-next` in Codex (same for the others). OpenCode reads both `~/.claude/skills` and `~/.agents/skills` and dedupes by name, so the double install is harmless.
+Say it in plain language, or use `/codebox-next` in Claude Code and OpenCode, `$codebox-next` in Codex (same for the others). OpenCode reads both `~/.claude/skills` and `~/.agents/skills` and dedupes by name (and Antigravity dedupes by resolved path), so multiple installs are harmless.
 
 For a repo that already has a board, run `board setup` there to refresh its `AGENTS.md` section; `board activity` hints when it's stale.
 
