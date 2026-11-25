@@ -110,20 +110,38 @@ class TestDetect(Tmp):
         self.assertEqual(codebox.detect_harnesses(h, which), ["claude", "codex"])
         self.assertEqual(codebox.detect_harnesses(h / "empty", lambda n: None), [])
 
+    def test_detect_antigravity(self):
+        empty = self.tmp / "empty"
+        self.assertEqual(codebox.detect_harnesses(empty, lambda n: "/usr/bin/agy" if n == "agy" else None),
+                         ["antigravity"])
+        self.assertEqual(codebox.detect_harnesses(empty, lambda n: "/usr/bin/antigravity" if n == "antigravity" else None),
+                         ["antigravity"])
+        bare = self.tmp / "bare"
+        (bare / ".gemini").mkdir(parents=True)
+        self.assertEqual(codebox.detect_harnesses(bare, lambda n: None), [])
+        for rel in (".gemini/antigravity-cli", ".gemini/config"):
+            h = self.tmp / rel.replace("/", "_")
+            (h / rel).mkdir(parents=True)
+            self.assertEqual(codebox.detect_harnesses(h, lambda n: None), ["antigravity"])
+
 
 class TestDesired(Tmp):
     def test_desired_links(self):
         h = self.tmp
         plugins = codebox.load_plugins(REPO)
-        d = codebox.desired_links(plugins, REPO, ["claude", "opencode"], h)
+        d = codebox.desired_links(plugins, REPO, ["claude", "opencode", "antigravity"], h)
         self.assertEqual(d[str(h / ".claude/skills/codebox-next")],
                          {"target": str(REPO / "plugins/board/skills/codebox-next"), "harnesses": ["claude"]})
         self.assertEqual(d[str(h / ".agents/skills/codebox-next")]["harnesses"], ["opencode"])
+        self.assertEqual(d[str(h / ".gemini/config/skills/codebox-next")],
+                         {"target": str(REPO / "plugins/board/skills/codebox-next"), "harnesses": ["antigravity"]})
         self.assertEqual(d[str(h / ".local/bin/codebox")]["target"], str(REPO / "bin/codebox"))
         self.assertEqual(d[str(h / ".local/bin/board")]["harnesses"], [])
-        self.assertEqual(len(d), 3 + 3 + 2)
+        self.assertEqual(len(d), 3 + 3 + 3 + 2)
         only_claude = codebox.desired_links(plugins, REPO, ["claude"], h)
-        self.assertFalse(any(".agents" in k for k in only_claude))
+        self.assertFalse(any(".agents" in k or ".gemini" in k for k in only_claude))
+        only_agy = codebox.desired_links(plugins, REPO, ["antigravity"], h)
+        self.assertFalse(any(".claude" in k or ".agents" in k for k in only_agy))
 
 
 class TestClassify(Tmp):
@@ -252,7 +270,7 @@ class TestInstall(Tmp):
             self.assertEqual(os.readlink(l["path"]), l["target"])
             self.assertTrue(Path(l["path"]).exists())
         self.assertIn("codebox installed for claude", out)
-        self.assertIn("skipped (not found): codex, opencode", out)
+        self.assertIn("skipped (not found): codex, opencode, antigravity", out)
         self.assertIn('export PATH="$HOME/.local/bin:$PATH"', out)
 
     def test_install_path_hint_uses_given_env(self):
@@ -309,6 +327,28 @@ class TestInstall(Tmp):
         rc, out, err = self.run_cb("install", "--harness", "claude")
         self.assertEqual(rc, 0, err)
         self.assertEqual(self.record()["harnesses"], ["claude", "codex"])
+
+    def test_install_antigravity(self):
+        import shutil
+        shutil.rmtree(self.h / ".claude")
+        old = fake_codebox_tree(self.tmp / "old")
+        skills_dir = self.h / ".gemini/config/skills"
+        skills_dir.mkdir(parents=True)
+        other = skills_dir / "other-skill"
+        other.mkdir()
+        stale = skills_dir / "defer"
+        stale.symlink_to(old / "plugins/board/skills/codebox-defer")
+        rc, out, err = self.run_cb("install", "--harness", "antigravity")
+        self.assertEqual(rc, 0, err)
+        self.assertFalse(stale.is_symlink())
+        self.assertTrue((skills_dir / "codebox-next").is_symlink())
+        self.assertFalse((self.h / ".agents/skills").exists())
+        self.assertTrue(other.is_dir())
+        self.assertEqual(self.record()["harnesses"], ["antigravity"])
+        rc, out, err = self.run_cb("uninstall")
+        self.assertEqual(rc, 0, err)
+        self.assertFalse((skills_dir / "codebox-next").is_symlink())
+        self.assertTrue(other.is_dir())
 
     def test_install_none_detected(self):
         import shutil

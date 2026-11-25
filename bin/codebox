@@ -13,9 +13,27 @@ import tarfile
 import tempfile
 from pathlib import Path
 
-HARNESSES = ("claude", "codex", "opencode")
-HARNESS_DIRS = {"claude": ".claude", "codex": ".codex", "opencode": ".config/opencode"}
-OLD_DIRS = (".claude/skills", ".agents/skills", ".local/bin", ".claude/commands", ".config/opencode/skills")
+HARNESSES = ("claude", "codex", "opencode", "antigravity")
+HARNESS_BINS = {
+    "claude": ("claude",),
+    "codex": ("codex",),
+    "opencode": ("opencode",),
+    "antigravity": ("agy", "antigravity"),
+}
+HARNESS_DIRS = {
+    "claude": (".claude",),
+    "codex": (".codex",),
+    "opencode": (".config/opencode",),
+    "antigravity": (".gemini/antigravity-cli", ".gemini/config"),
+}
+OLD_DIRS = (
+    ".claude/skills",
+    ".agents/skills",
+    ".gemini/config/skills",
+    ".local/bin",
+    ".claude/commands",
+    ".config/opencode/skills",
+)
 
 
 def parse_version(v: str) -> tuple:
@@ -80,7 +98,11 @@ def load_plugins(root: Path) -> list:
 
 
 def detect_harnesses(user_home: Path, which=shutil.which) -> list:
-    return [h for h in HARNESSES if which(h) or (Path(user_home) / HARNESS_DIRS[h]).exists()]
+    home = Path(user_home)
+    return [
+        h for h in HARNESSES
+        if any(which(b) for b in HARNESS_BINS[h]) or any((home / d).exists() for d in HARNESS_DIRS[h])
+    ]
 
 
 def desired_links(plugins: list, root: Path, harnesses: list, user_home: Path) -> dict:
@@ -94,6 +116,8 @@ def desired_links(plugins: list, root: Path, harnesses: list, user_home: Path) -
                 links[str(home / ".claude/skills" / s)] = {"target": target, "harnesses": ["claude"]}
             if agents:
                 links[str(home / ".agents/skills" / s)] = {"target": target, "harnesses": list(agents)}
+            if "antigravity" in harnesses:
+                links[str(home / ".gemini/config/skills" / s)] = {"target": target, "harnesses": ["antigravity"]}
         for c, rel in p["commands"].items():
             links[str(home / ".local/bin" / c)] = {"target": str(root / rel), "harnesses": []}
     links[str(home / ".local/bin/codebox")] = {"target": str(root / "bin/codebox"), "harnesses": []}
